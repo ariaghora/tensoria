@@ -1,14 +1,14 @@
-<p style="text-align: center">
+<p align="center">
     <h1>Tensoria</h1>
 </p>
 
 ---
 
-<p style="text-align: center">
+<p align="center">
 A tensor manipulation library running on CPU and GPU, self-contained, in pure rust
 </p>
 
-<p style="text-align: center">
+<p align="center">
     <img src="assets/img.png" width="200"/>
 </p>
 
