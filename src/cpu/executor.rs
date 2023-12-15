@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::cpu::executor::CPUTensorData::F32;
 use crate::session::Session;
-use crate::traits::{Executor, TensorData};
+use crate::traits::{Executor, TensorProps};
 use crate::var::{TensorDataType, Variable, VarType};
 
 #[derive(Debug)]
@@ -16,7 +16,7 @@ pub enum CPUTensorData {
     // I32(ndarray::ArrayD<i32>),
 }
 
-impl TensorData for CPUTensorData {
+impl TensorProps for CPUTensorData {
     fn shape(&self) -> Vec<usize> {
         match self {
             CPUTensorData::F32(val) => { val.shape().to_vec() }

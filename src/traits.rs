@@ -3,7 +3,7 @@ use std::error::Error;
 use crate::session::Session;
 use crate::var::TensorDataType;
 
-pub trait TensorData {
+pub trait TensorProps {
     fn shape(&self) -> Vec<usize>;
     fn dtype(&self) -> TensorDataType;
 }
