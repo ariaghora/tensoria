@@ -106,20 +106,13 @@ impl Executor for CPUExecutor {
                 VarType::Add => {
                     let left_id = var_prevs[0];
                     let right_id = var_prevs[1];
-                    let left = CPUTensor::from_var(&session.tensors.lock().unwrap()[&left_id]);
-                    let right = CPUTensor::from_var(&session.tensors.lock().unwrap()[&right_id]);
+                    let left = &self.tensors[&left_id];
+                    let right = &self.tensors[&right_id];
                     self.tensors.insert(*id, left.add(&right));
                 }
                 _ => todo!()
             };
         }
-
-        // then remove intermediary nodes
-        // self.tensors.iter().filter(|(k,v)| {
-        //     let t = session.tensors.lock().unwrap()[k];
-        //     let is_intermediary = t.prevs.len() > 0 && t.nexts.borrow().len()>0;
-        //     is_intermediary
-        // })
         Ok(())
     }
 }
@@ -136,8 +129,8 @@ mod test {
     #[test]
     fn add() {
         let sess = Session::new();
-        let a = sess.new_tensor_var(Some(TensorData::F32(vec![1.0, 2.0])), vec![2]).unwrap();
-        let b = sess.new_tensor_var(Some(TensorData::F32(vec![3.0, 4.0])), vec![2]).unwrap();
+        let a = sess.new_tensor_var(TensorData::F32(vec![1.0, 2.0]), vec![2]).unwrap();
+        let b = sess.new_tensor_var(TensorData::F32(vec![3.0, 4.0]), vec![2]).unwrap();
 
         let res = a.add(&b);
 
@@ -152,5 +145,21 @@ mod test {
         }
 
         assert_eq!(executor.tensors.len(), 3);
+    }
+
+    #[test]
+    fn add_self() {
+        let sess = Session::new();
+        let a = sess.new_tensor_var(TensorData::F32(vec![1.0, 2.0]), vec![2]).unwrap();
+        let b = a.add(&a).add(&a);
+
+        let mut executor = CPUExecutor { tensors: HashMap::new() };
+        executor.execute(&sess).unwrap();
+        let res_cpu = executor.tensors.get(&b.id).unwrap();
+        if let CPUTensorData::F32(data) = &res_cpu.data {
+            assert_eq!(data.as_slice().unwrap(), vec![3.0, 6.0])
+        } else {
+            panic!("result should be of type F32")
+        }
     }
 }

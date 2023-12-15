@@ -11,7 +11,7 @@ use wgpu::util::DeviceExt;
 use crate::cpu::executor::CPUTensor;
 use crate::session::Session;
 use crate::traits::{Executor, TensorData};
-use crate::var::{TensorDataType, Variable};
+use crate::var::{TensorDataType, Variable, VarType};
 
 #[derive(Debug)]
 pub enum GPUTensorData {
@@ -99,12 +99,16 @@ pub struct GPUExecutor {
 impl Executor for GPUExecutor {
     fn execute(&mut self, session: &Session) -> Result<(), Box<dyn Error>> {
         let (device, queue) = pollster::block_on(self.create_device());
-        pollster::block_on(self.execute_gpu_inner(&device, &queue));
+        pollster::block_on(self.execute_inner(&device, &queue, session));
         Ok(())
     }
 }
 
 impl GPUExecutor {
+    pub fn new() -> Self {
+        Self { tensors: Default::default() }
+    }
+
     async fn create_device(&self) -> (wgpu::Device, wgpu::Queue) {
         let instance = wgpu::Instance::default();
         let adapter = instance
@@ -127,7 +131,31 @@ impl GPUExecutor {
         (device, queue)
     }
 
-    async fn execute_gpu_inner(&self, device: &wgpu::Device, queue: &wgpu::Queue) {
+    async fn execute_inner(&self, device: &wgpu::Device, queue: &wgpu::Queue, session: &Session) {
+        let sorted_ids = session.sorted_ids();
+        for id in &sorted_ids {
+            let var = &session.tensors.lock().unwrap()[id];
+
+            match var.var_type {
+                // leaf variable is guaranteed to have tensor data, enforced by initializer API
+                VarType::Leaf => {
+                    let data = var.tensor_data.as_ref().unwrap();
+                    match data.dtype() {
+                        TensorDataType::F32 => {
+                            data.get_data_f32();
+                        }
+                        TensorDataType::I32 => {
+                            data.get_data_i32();
+                        }
+                    }
+                }
+                VarType::Add => { todo!() }
+                VarType::Sub => { todo!() }
+            }
+        }
+    }
+
+    async fn execute_op(&self, device: &wgpu::Device, queue: &wgpu::Queue) {
         let shader_module = device.create_shader_module(
             wgpu::ShaderModuleDescriptor {
                 label: Some("add_shader"),
@@ -234,12 +262,16 @@ impl GPUExecutor {
 mod test {
     use crate::session::Session;
     use crate::traits::Executor;
+    use crate::var::TensorData;
     use crate::wgpu::executor::GPUExecutor;
 
     #[test]
     fn add() {
         let mut sess = Session::new();
-        let mut executor = GPUExecutor { tensors: Default::default() };
+        let a = sess.new_tensor_var(TensorData::F32(vec![1., 2.]), vec![2]).unwrap();
+        let b = sess.new_tensor_var(TensorData::F32(vec![1., 2.]), vec![2]).unwrap();
+        let c = a.add(&b);
+        let mut executor = GPUExecutor::new();
 
         executor.execute(&mut sess).unwrap();
     }

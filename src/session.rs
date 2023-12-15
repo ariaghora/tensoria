@@ -20,26 +20,22 @@ impl Session {
         }
     }
 
-    pub fn new_tensor_var(&self, data: Option<TensorData>, shape: Vec<usize>) -> Result<Arc<Variable>, Box<dyn Error>> {
-        let is_shape_valid = match &data {
-            Some(values) => {
-                match (values.len(), shape.len()) {
-                    (1, 0) | (1, 1) => { true }
-                    _ => {
-                        let len_from_shape = shape.iter().fold(1, |x, y| x * (*y as usize));
-                        values.len() == len_from_shape
-                    }
+    pub fn new_tensor_var(&self, data: TensorData, shape: Vec<usize>) -> Result<Arc<Variable>, Box<dyn Error>> {
+        let is_shape_valid =
+            match (data.len(), shape.len()) {
+                (1, 0) | (1, 1) => { true }
+                _ => {
+                    let len_from_shape = shape.iter().fold(1, |x, y| x * (*y as usize));
+                    data.len() == len_from_shape
                 }
-            }
-            None => true
-        };
+            };
         if !is_shape_valid {
             return Err(Box::new(TensoriaError::CannotReshapeError {}));
         }
 
         let tensor = Arc::new(Variable {
             id: Uuid::new_v4(),
-            tensor_data: data,
+            tensor_data: Some(data),
             shape,
             session: Arc::downgrade(&self.tensors),
             prevs: vec![],
@@ -82,14 +78,15 @@ impl Session {
 #[cfg(test)]
 mod test {
     use crate::session::Session;
+    use crate::var::TensorData;
 
     #[test]
     fn topological_sort() {
         let sess = Session::new();
-        let a = sess.new_tensor_var(None, vec![1]).unwrap();
-        let b = sess.new_tensor_var(None, vec![2]).unwrap();
-        let c = sess.new_tensor_var(None, vec![3]).unwrap();
-        let d = sess.new_tensor_var(None, vec![4]).unwrap();
+        let a = sess.new_tensor_var(TensorData::F32(vec![1.0]), vec![]).unwrap();
+        let b = sess.new_tensor_var(TensorData::F32(vec![1.0]), vec![]).unwrap();
+        let c = sess.new_tensor_var(TensorData::F32(vec![1.0]), vec![]).unwrap();
+        let d = sess.new_tensor_var(TensorData::F32(vec![1.0]), vec![]).unwrap();
 
         let add_res = a.add(&b);
         let sub_res = add_res.sub(&c);

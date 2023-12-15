@@ -44,6 +44,11 @@ impl TensorData {
         if let TensorData::F32(val) = self { return val; }
         panic!("Attempting to get f32 but the tensor is of different type")
     }
+    pub fn get_data_i32<'a, 'b>(&'a self) -> &'b Vec<i32>
+        where 'a: 'b {
+        if let TensorData::I32(val) = self { return val; }
+        panic!("Attempting to get f32 but the tensor is of different type")
+    }
 }
 
 #[derive(Debug)]
@@ -91,12 +96,13 @@ impl Variable {
 #[cfg(test)]
 mod test {
     use crate::session::Session;
+    use crate::var::TensorData;
 
     #[test]
     fn links() {
         let sess = Session::new();
-        let a = sess.new_tensor_var(None, vec![]).unwrap();
-        let b = sess.new_tensor_var(None, vec![]).unwrap();
+        let a = sess.new_tensor_var(TensorData::F32(vec![1.0]), vec![]).unwrap();
+        let b = sess.new_tensor_var(TensorData::F32(vec![1.0]), vec![]).unwrap();
         let res = a.add(&b);
 
         assert_eq!(a.nexts.borrow().len(), 1);
