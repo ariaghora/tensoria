@@ -12,7 +12,7 @@ pub enum VarType {
     Leaf,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum TensorDataType {
     F32,
     I32,
@@ -55,25 +55,37 @@ impl TensorData {
 pub struct Variable {
     pub id: Uuid,
     pub tensor_data: Option<TensorData>,
+    pub dtype: TensorDataType,
     pub shape: Vec<usize>,
     pub session: Weak<RefCell<HashMap<Uuid, Arc<Variable>>>>,
     pub var_type: VarType,
     pub prevs: Vec<Uuid>,
     pub nexts: Rc<RefCell<Vec<Uuid>>>,
+    pub requires_grad: bool,
 }
 
 impl Variable {
     fn binary_op(
-        &self, other: &Arc<Variable>, var_type: VarType, output_shape: Vec<usize>,
+        &self,
+        other: &Arc<Variable>,
+        var_type: VarType,
+        output_shape: Vec<usize>,
     ) -> Arc<Variable> {
+        let output_dtype = match (&self.dtype, &other.dtype) {
+            (TensorDataType::F32, TensorDataType::F32) => { TensorDataType::F32 }
+            _ => unimplemented!("cannot perform {:?} between {:?} and {:?}", var_type, &self.dtype, &other.dtype)
+        };
+
         let result_tensor = Arc::new(Variable {
             id: Uuid::new_v4(),
             tensor_data: None,
+            dtype: output_dtype,
             shape: output_shape,
             session: self.session.clone(),
             prevs: vec![self.id, other.id],
             nexts: Rc::new(RefCell::new(Vec::new())),
             var_type,
+            requires_grad: self.requires_grad || other.requires_grad,
         });
 
         self.nexts.borrow_mut().push(self.id);

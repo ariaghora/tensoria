@@ -33,14 +33,17 @@ impl Session {
             return Err(Box::new(TensoriaError::CannotReshapeError {}));
         }
 
+        let dtype = data.dtype();
         let tensor = Arc::new(Variable {
             id: Uuid::new_v4(),
             tensor_data: Some(data),
+            dtype: dtype,
             shape,
             session: Rc::downgrade(&self.tensors),
             prevs: vec![],
             nexts: Rc::new(RefCell::new(Vec::new())),
             var_type: VarType::Leaf,
+            requires_grad: false,
         });
         self.tensors.borrow_mut().insert(tensor.id, tensor.clone());
         Ok(tensor)

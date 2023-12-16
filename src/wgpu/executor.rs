@@ -2,9 +2,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::Debug;
-use std::sync::Arc;
 
-use ndarray::{ArrayD, IxDyn};
 use uuid::Uuid;
 use wgpu::BufferUsages;
 use wgpu::util::DeviceExt;
@@ -12,86 +10,7 @@ use wgpu::util::DeviceExt;
 use crate::cpu::executor::CPUTensor;
 use crate::session::Session;
 use crate::traits::{Executor, TensorProps};
-use crate::var::{TensorDataType, Variable, VarType};
-
-#[derive(Debug)]
-pub enum GPUTensorData {
-    F32(ndarray::ArrayD<f32>),
-}
-
-impl TensorProps for GPUTensorData {
-    fn shape(&self) -> Vec<usize> {
-        match self {
-            GPUTensorData::F32(val) => { val.shape().to_vec() }
-        }
-    }
-
-    fn dtype(&self) -> TensorDataType {
-        match self {
-            GPUTensorData::F32(..) => { TensorDataType::F32 }
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct GPUTensor {
-    pub data: GPUTensorData,
-    pub grad: Option<GPUTensorData>,
-    pub requires_grad: bool,
-}
-
-impl GPUTensor {
-    pub fn from_var(var: &Arc<Variable>) -> Self {
-        match &var.tensor_data {
-            Some(data) => {
-                match data.dtype() {
-                    TensorDataType::F32 => {
-                        GPUTensor {
-                            data: GPUTensorData::F32(ArrayD::from_shape_vec(IxDyn(var.shape.as_slice()), data.get_data_f32().clone()).unwrap().into_dyn()),
-                            grad: None,
-                            requires_grad: false,
-                        }
-                    }
-                    _ => panic!("Should be f32 :(")
-                }
-            }
-            None => panic!("Cannot build GPUTensor from None")
-        }
-    }
-
-    pub fn new(data: GPUTensorData, requires_grad: bool) -> GPUTensor {
-        let zero_grad = |shape, requires_grad: bool| {
-            if requires_grad {
-                Some(GPUTensorData::F32(ArrayD::zeros(shape)))
-            } else {
-                None
-            }
-        };
-
-        // Function to handle addition and return a GPUTensor
-        let add_tensors = |data: GPUTensorData, requires_grad: bool| {
-            let shape = data.shape().clone();
-            GPUTensor {
-                data,
-                grad: zero_grad(shape, requires_grad),
-                requires_grad,
-            }
-        };
-        add_tensors(data, requires_grad)
-    }
-}
-
-impl GPUTensor {
-    pub fn add(&self, other: &GPUTensor) -> GPUTensor {
-        let requires_grad = self.requires_grad || other.requires_grad;
-        match (&self.data, &other.data) {
-            (GPUTensorData::F32(a), GPUTensorData::F32(b)) => {
-                GPUTensor::new(GPUTensorData::F32(a + b), requires_grad)
-            }
-            _ => unimplemented!(),
-        }
-    }
-}
+use crate::wgpu::tensor::GPUTensor;
 
 pub struct GPUExecutor {
     tensors: HashMap<Uuid, CPUTensor>,
@@ -105,48 +24,6 @@ impl Executor for GPUExecutor {
     }
 }
 
-fn create_storage_buf<'a, T: bytemuck::Pod + Default + Debug>(
-    device: &wgpu::Device,
-    buf_label: &str,
-    values: Option<&'a Vec<T>>,
-    shape: &Vec<usize>,
-) -> wgpu::Buffer {
-    let mut n_items = shape.iter().fold(1, |x, y| x * y) as usize;
-    // TODO: proper handling on 0-sized dims or non-zero-length shape but containing 0-length dim
-    if n_items == 0 {
-        n_items = 1;
-    }
-    let vals: Cow<'a, Vec<T>> = match values {
-        Some(v) => Cow::Borrowed(v),
-        None => Cow::Owned(vec![T::default(); n_items]),
-    };
-
-    // Some models provides tensors with empty data, i.e., with shape [0]. WGPU does not
-    // allow zero buffer binding, so we trick it by using a "dummy" buffer binding with
-    // size of 4 (minimum allowed)
-    let tensor_has_data = vals.len() > 0;
-    let data = if tensor_has_data {
-        // We create buffer initialized with tensor's original data
-        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some(format!("{}.storage", buf_label).as_str()),
-            contents: bytemuck::cast_slice(&vals),
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::COPY_SRC,
-        })
-    } else {
-        // The dummy buffer
-        device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some(format!("{}.storage", buf_label).as_str()),
-            size: 4,
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        })
-    };
-    data
-}
 
 impl GPUExecutor {
     pub fn new() -> Self {
@@ -177,26 +54,33 @@ impl GPUExecutor {
 
     async fn execute_inner(&self, device: &wgpu::Device, queue: &wgpu::Queue, session: &Session) {
         let sorted_ids = session.sorted_ids();
+
+        // Here we allocate necessary buffers before actually execute the graph
         for id in &sorted_ids {
             let var = &session.tensors.borrow()[id];
+            let t = GPUTensor::from_var(var, device);
 
-            let buf = match var.var_type {
-                // leaf variable is guaranteed to have tensor data, enforced by initializer API
-                VarType::Leaf => {
-                    let data = var.tensor_data.as_ref().unwrap();
-                    match data.dtype() {
-                        TensorDataType::F32 => { create_storage_buf(device, &var.id.to_string(), Some(data.get_data_f32()), &var.shape) }
-                        TensorDataType::I32 => { create_storage_buf(device, &var.id.to_string(), Some(data.get_data_i32()), &var.shape) }
-                    }
-                }
-                VarType::Add => {
-                    let left = &session.tensors.borrow()[&var.prevs[0]];
-                    // let left = var.prevs[0];
-                    // match () {  }
-                    todo!()
-                }
-                VarType::Sub => { todo!() }
-            };
+            // let buf = match var.var_type {
+            //     // leaf variable is guaranteed to have tensor data, enforced by initializer API
+            //     VarType::Leaf => {
+            //         let data = var.tensor_data.as_ref().unwrap();
+            //         match data.dtype() {
+            //             TensorDataType::F32 => { create_storage_buf(device, &var.id.to_string(), Some(data.get_data_f32()), &var.shape) }
+            //             TensorDataType::I32 => { create_storage_buf(device, &var.id.to_string(), Some(data.get_data_i32()), &var.shape) }
+            //         }
+            //     }
+            //     VarType::Add => {
+            //         let left = &session.tensors.borrow()[&var.prevs[0]];
+            //         let ltype = left.tensor_data.as_ref().unwrap().dtype();
+            //         let right = &session.tensors.borrow()[&var.prevs[1]];
+            //         let rtype = right.tensor_data.as_ref().unwrap().dtype();
+            //         match (&ltype, &rtype) {
+            //             (&TensorDataType::F32, &TensorDataType::F32) => { create_storage_buf::<f32>(device, &var.id.to_string(), None, &var.shape) }
+            //             (_, _) => { unimplemented!("cannot allocate buffer for addition between {:?} and {:?}", ltype, rtype) }
+            //         }
+            //     }
+            //     VarType::Sub => { todo!() }
+            // };
         }
     }
 
