@@ -6,12 +6,14 @@ use wgpu::Device;
 use wgpu::util::DeviceExt;
 
 use crate::traits::TensorProps;
-use crate::var::{TensorDataType, Variable};
+use crate::var::{TensorDataType, Variable, VarType};
+use crate::wgpu::op;
+use crate::wgpu::op::Op;
 
 #[derive(Debug)]
 pub struct GPUTensorData {
-    dtype: TensorDataType,
     pub buffer: wgpu::Buffer,
+    dtype: TensorDataType,
     shape: Vec<usize>,
 }
 
@@ -25,11 +27,11 @@ impl TensorProps for GPUTensorData {
     }
 }
 
-#[derive(Debug)]
 pub struct GPUTensor {
     pub data: GPUTensorData,
     pub grad: Option<GPUTensorData>,
     pub requires_grad: bool,
+    pub executable_op: Box<dyn Op>,
 }
 
 pub fn create_storage_buf<'a, T: bytemuck::Pod + Default + Debug>(
@@ -128,12 +130,14 @@ impl GPUTensor {
                 })
             } else { None },
             requires_grad: var.requires_grad,
+            executable_op: var_op_type_to_executable(&var.var_type),
         }
     }
 
     pub fn new(data: GPUTensorData, requires_grad: bool, device: &Device) -> GPUTensor {
         let data_shape = data.shape().clone();
         let dtype = data.dtype.clone();
+
         GPUTensor {
             data,
             grad: if requires_grad {
@@ -148,13 +152,15 @@ impl GPUTensor {
                 )
             } else { None },
             requires_grad,
+            executable_op: Box::new(op::OpLeaf {}),
         }
     }
 }
 
-impl GPUTensor {
-    pub fn add(&self, other: &GPUTensor) -> GPUTensor {
-        todo!()
+fn var_op_type_to_executable(var_type: &VarType) -> Box<dyn Op> {
+    match var_type {
+        VarType::Add => { Box::new(op::OpAdd {}) }
+        VarType::Sub => { todo!() }
+        VarType::Leaf => { Box::new(op::OpLeaf {}) }
     }
 }
-

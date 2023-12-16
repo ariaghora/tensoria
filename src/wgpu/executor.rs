@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::Debug;
 
+use include_dir::{Dir, include_dir};
 use uuid::Uuid;
 use wgpu::util::DeviceExt;
 
@@ -11,6 +12,19 @@ use crate::traits::{Executor, TensorProps};
 use crate::var::{TensorDataType, VarType};
 use crate::wgpu::tensor::{create_staging_buf, GPUTensor};
 
+static PROJECT_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/wgpu/wgsl/");
+
+
+impl VarType {
+    fn op_str<'a>(&self) -> &'a str {
+        match self {
+            VarType::Add => { "add" }
+            VarType::Sub => { "sub" }
+            VarType::Leaf => { "leaf" }
+        }
+    }
+}
+
 pub struct GPUExecutor {
     tensors: HashMap<Uuid, GPUTensor>,
     staging_buf: HashMap<Uuid, wgpu::Buffer>,
@@ -18,7 +32,8 @@ pub struct GPUExecutor {
 
 impl Executor for GPUExecutor {
     fn execute(&mut self, session: &Session) -> Result<(), Box<dyn Error>> {
-        let (device, queue) = pollster::block_on(self.create_device());
+        let (device, queue) = pollster::block_on(Self::create_device());
+        pollster::block_on(self.alloc_bufs(&device, &queue, session));
         pollster::block_on(self.execute_inner(&device, &queue, session));
         Ok(())
     }
@@ -27,10 +42,11 @@ impl Executor for GPUExecutor {
 
 impl GPUExecutor {
     pub fn new() -> Self {
-        Self { tensors: Default::default(), staging_buf: Default::default() }
+        let mut executor = Self { tensors: Default::default(), staging_buf: Default::default() };
+        executor
     }
 
-    async fn create_device(&self) -> (wgpu::Device, wgpu::Queue) {
+    async fn create_device() -> (wgpu::Device, wgpu::Queue) {
         let instance = wgpu::Instance::default();
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions::default())
@@ -52,7 +68,7 @@ impl GPUExecutor {
         (device, queue)
     }
 
-    async fn execute_inner(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, session: &Session) {
+    async fn alloc_bufs(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, session: &Session) {
         let sorted_ids = session.sorted_ids();
 
         // Here we allocate necessary buffers before actually execute the graph
@@ -65,12 +81,7 @@ impl GPUExecutor {
         // We also prepare staging buffers and ask them to retrieve data from storage buffer.
         // The staging buffers are provided only for terminal variables (variables with no outgoing
         // connection, where `nexts.len() == 0`)
-        let terminal_node_ids: Vec<Uuid> = session.tensors.borrow()
-            .iter()
-            .filter(|(_, v)| v.nexts.borrow().len() == 0)
-            .map(|(_, v)| v.id)
-            .collect();
-
+        let terminal_node_ids = session.terminal_ids();
         for id in &terminal_node_ids {
             let var = &session.tensors.borrow()[id];
             let staging_buf = match var.dtype {
@@ -79,7 +90,10 @@ impl GPUExecutor {
             };
             self.staging_buf.insert(*id, staging_buf);
         }
+    }
 
+    async fn execute_inner(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, session: &Session) {
+        let sorted_ids = session.sorted_ids();
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
         // Setup compute pass for each variable in topological order. We will skip leaf variables since
@@ -90,15 +104,15 @@ impl GPUExecutor {
                 continue;
             }
 
-            let input_bufs: Vec<&GPUTensor> = var.prevs.iter().map(|id| &self.tensors[&id]).collect();
-            let output_buf = &self.tensors[&var.id];
+            let input_tensors: Vec<&GPUTensor> = var.prevs.iter().map(|id| &self.tensors[&id]).collect();
+            let current_tensor = &self.tensors[&var.id];
 
             // All buffers to bind (all input buffers AND output buffer), required by shaders
-            let mut all_bufs = input_bufs;
-            all_bufs.push(output_buf);
+            let mut all_tensors = input_tensors;
+            all_tensors.push(current_tensor);
 
             let mut bind_idx = 0;
-            let bind_group_entries: Vec<wgpu::BindGroupEntry> = all_bufs
+            let bind_group_entries: Vec<wgpu::BindGroupEntry> = all_tensors
                 .iter()
                 .map(|v| {
                     let entry = wgpu::BindGroupEntry { binding: bind_idx, resource: v.data.buffer.as_entire_binding() };
@@ -107,10 +121,27 @@ impl GPUExecutor {
                 })
                 .collect();
 
+            let op_str = var.var_type.op_str();
+            let templ_str = PROJECT_DIR
+                .get_file(format!("{}.wgsl", op_str))
+                .unwrap()
+                .contents_utf8()
+                .unwrap();
+
+            let mut templ = tera::Tera::default();
+            templ.add_raw_template(op_str, templ_str).unwrap();
+
+            let mut params = tera::Context::new();
+
+            // Ask current tensor to setup shader template parameters
+            current_tensor.executable_op.setup_shader(var.id, session, &mut params);
+
+            let shader_src = templ.render(op_str, &params).unwrap();
+
             let shader_module = device.create_shader_module(
                 wgpu::ShaderModuleDescriptor {
-                    label: Some("add_shader"),
-                    source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("wgsl/add.wgsl"))),
+                    label: Some(format!("{}_shader", op_str).as_str()),
+                    source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(&shader_src)),
                 }
             );
             let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -133,12 +164,13 @@ impl GPUExecutor {
                 });
                 cpass.set_pipeline(&compute_pipeline);
                 cpass.set_bind_group(0, &bind_group, &[]);
-                cpass.insert_debug_marker("add_pass");
 
-                // TODO: use proper workgroups!
-                cpass.dispatch_workgroups(1, 1, 1);
+                let [x, y, z] = current_tensor.executable_op.workgroups(var.id, &session);
+                cpass.dispatch_workgroups(x, y, z);
             }
         }
+
+        let terminal_node_ids = session.terminal_ids();
 
         // copy buf of terminal variables to staging buffers
         for id in &terminal_node_ids {

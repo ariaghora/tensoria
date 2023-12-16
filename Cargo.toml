@@ -12,3 +12,5 @@ wgpu = { version = "0.18.0" }
 bytemuck = "1.14.0"
 pollster = "0.3.0"
 flume = "0.11.0"
+include_dir = "0.7.3"
+tera = "1.19.1"

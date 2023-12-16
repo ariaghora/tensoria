@@ -75,6 +75,15 @@ impl Session {
         }
         out
     }
+    
+    pub fn terminal_ids(&self) -> Vec<Uuid> {
+        let terminal_node_ids: Vec<Uuid> = self.tensors.borrow()
+            .iter()
+            .filter(|(_, v)| v.nexts.borrow().len() == 0)
+            .map(|(_, v)| v.id)
+            .collect();
+        terminal_node_ids
+    }
 }
 
 
