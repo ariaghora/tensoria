@@ -1,15 +1,14 @@
 <p align="center">
-    <h1>Tensoria</h1>
+    <b>T E N S O R I A</b>
 </p>
 
----
 
 <p align="center">
 A tensor manipulation library running on CPU and GPU, self-contained, in pure rust
 </p>
 
 <p align="center">
-    <img src="assets/img.png" width="200"/>
+    <img src="assets/img.png" width="150"/>
 </p>
 
 Tensoria provides two execution engines:
