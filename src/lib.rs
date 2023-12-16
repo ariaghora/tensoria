@@ -43,6 +43,6 @@ mod tests {
         let b = a.add(&a);
         assert_eq!(b.prevs[0], a.id);
         assert_eq!(b.prevs[1], a.id);
-        assert_eq!(sess.tensors.lock().unwrap().len(), 2);
+        assert_eq!(sess.tensors.borrow().len(), 2);
     }
 }

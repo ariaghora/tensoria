@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::error::Error;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use uuid::Uuid;
 
@@ -10,13 +10,13 @@ use crate::error::TensoriaError;
 use crate::var::{TensorData, Variable, VarType};
 
 pub struct Session {
-    pub(crate) tensors: Arc<Mutex<HashMap<Uuid, Arc<Variable>>>>,
+    pub(crate) tensors: Rc<RefCell<HashMap<Uuid, Arc<Variable>>>>,
 }
 
 impl Session {
     pub fn new() -> Self {
         Session {
-            tensors: Arc::new(Mutex::new(HashMap::new())),
+            tensors: Rc::new(RefCell::new(HashMap::new())),
         }
     }
 
@@ -37,12 +37,12 @@ impl Session {
             id: Uuid::new_v4(),
             tensor_data: Some(data),
             shape,
-            session: Arc::downgrade(&self.tensors),
+            session: Rc::downgrade(&self.tensors),
             prevs: vec![],
             nexts: Rc::new(RefCell::new(Vec::new())),
             var_type: VarType::Leaf,
         });
-        self.tensors.lock().unwrap().insert(tensor.id, tensor.clone());
+        self.tensors.borrow_mut().insert(tensor.id, tensor.clone());
         Ok(tensor)
     }
 
@@ -52,7 +52,7 @@ impl Session {
             return;
         }
 
-        let var = &self.tensors.lock().unwrap()[&root].prevs.clone();
+        let var = &self.tensors.borrow()[&root].prevs.clone();
         for p in var {
             self.dfs(*p, out);
         }
@@ -60,7 +60,7 @@ impl Session {
     }
 
     pub fn sorted_ids(&self) -> Vec<Uuid> {
-        let terminal_ids: Vec<Uuid> = self.tensors.lock().unwrap()
+        let terminal_ids: Vec<Uuid> = self.tensors.borrow()
             .iter()
             .filter(|(_, v)| v.nexts.borrow().len() == 0)
             .map(|(_, v)| v.id)

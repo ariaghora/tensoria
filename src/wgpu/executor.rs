@@ -178,7 +178,7 @@ impl GPUExecutor {
     async fn execute_inner(&self, device: &wgpu::Device, queue: &wgpu::Queue, session: &Session) {
         let sorted_ids = session.sorted_ids();
         for id in &sorted_ids {
-            let var = &session.tensors.lock().unwrap()[id];
+            let var = &session.tensors.borrow()[id];
 
             let buf = match var.var_type {
                 // leaf variable is guaranteed to have tensor data, enforced by initializer API
@@ -190,7 +190,7 @@ impl GPUExecutor {
                     }
                 }
                 VarType::Add => {
-                    let left = &session.tensors.lock().unwrap()[&var.prevs[0]];
+                    let left = &session.tensors.borrow()[&var.prevs[0]];
                     // let left = var.prevs[0];
                     // match () {  }
                     todo!()

@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
-use std::sync::{Arc, Mutex, Weak};
+use std::rc::{Rc, Weak};
+use std::sync::Arc;
 
 use uuid::Uuid;
 
@@ -56,7 +56,7 @@ pub struct Variable {
     pub id: Uuid,
     pub tensor_data: Option<TensorData>,
     pub shape: Vec<usize>,
-    pub session: Weak<Mutex<HashMap<Uuid, Arc<Variable>>>>,
+    pub session: Weak<RefCell<HashMap<Uuid, Arc<Variable>>>>,
     pub var_type: VarType,
     pub prevs: Vec<Uuid>,
     pub nexts: Rc<RefCell<Vec<Uuid>>>,
@@ -80,7 +80,7 @@ impl Variable {
         other.nexts.borrow_mut().push(self.id);
 
         if let Some(session) = self.session.upgrade() {
-            session.lock().unwrap().insert(result_tensor.id, result_tensor.clone());
+            session.borrow_mut().insert(result_tensor.id, result_tensor.clone());
         }
         result_tensor
     }
