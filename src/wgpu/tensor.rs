@@ -11,7 +11,7 @@ use crate::var::{TensorDataType, Variable};
 #[derive(Debug)]
 pub struct GPUTensorData {
     dtype: TensorDataType,
-    buffer: wgpu::Buffer,
+    pub buffer: wgpu::Buffer,
     shape: Vec<usize>,
 }
 
@@ -69,9 +69,28 @@ pub fn create_storage_buf<'a, T: bytemuck::Pod + Default + Debug>(
             usage: wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::COPY_DST
                 | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
+            mapped_at_creation: true,
         })
     };
+    data
+}
+
+pub fn create_staging_buf<'a, T: bytemuck::Pod + Default + Debug>(
+    device: &wgpu::Device,
+    buf_label: &str,
+    values: &'a Option<Vec<T>>,
+    shape: &Vec<usize>,
+) -> wgpu::Buffer {
+    let n_items = shape.iter().fold(1, |x, y| x * y) as usize;
+    let vals: Cow<'a, Vec<T>> = match values {
+        Some(v) => Cow::Borrowed(v),
+        None => Cow::Owned(vec![T::default(); n_items]),
+    };
+    let data = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some(format!("{}.staging", buf_label).as_str()),
+        contents: bytemuck::cast_slice(&vals),
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+    });
     data
 }
 

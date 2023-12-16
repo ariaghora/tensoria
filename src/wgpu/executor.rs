@@ -4,16 +4,16 @@ use std::error::Error;
 use std::fmt::Debug;
 
 use uuid::Uuid;
-use wgpu::BufferUsages;
 use wgpu::util::DeviceExt;
 
-use crate::cpu::executor::CPUTensor;
 use crate::session::Session;
 use crate::traits::{Executor, TensorProps};
-use crate::wgpu::tensor::GPUTensor;
+use crate::var::{TensorDataType, VarType};
+use crate::wgpu::tensor::{create_staging_buf, GPUTensor};
 
 pub struct GPUExecutor {
-    tensors: HashMap<Uuid, CPUTensor>,
+    tensors: HashMap<Uuid, GPUTensor>,
+    staging_buf: HashMap<Uuid, wgpu::Buffer>,
 }
 
 impl Executor for GPUExecutor {
@@ -27,7 +27,7 @@ impl Executor for GPUExecutor {
 
 impl GPUExecutor {
     pub fn new() -> Self {
-        Self { tensors: Default::default() }
+        Self { tensors: Default::default(), staging_buf: Default::default() }
     }
 
     async fn create_device(&self) -> (wgpu::Device, wgpu::Queue) {
@@ -52,138 +52,136 @@ impl GPUExecutor {
         (device, queue)
     }
 
-    async fn execute_inner(&self, device: &wgpu::Device, queue: &wgpu::Queue, session: &Session) {
+    async fn execute_inner(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, session: &Session) {
         let sorted_ids = session.sorted_ids();
 
         // Here we allocate necessary buffers before actually execute the graph
         for id in &sorted_ids {
             let var = &session.tensors.borrow()[id];
             let t = GPUTensor::from_var(var, device);
-
-            // let buf = match var.var_type {
-            //     // leaf variable is guaranteed to have tensor data, enforced by initializer API
-            //     VarType::Leaf => {
-            //         let data = var.tensor_data.as_ref().unwrap();
-            //         match data.dtype() {
-            //             TensorDataType::F32 => { create_storage_buf(device, &var.id.to_string(), Some(data.get_data_f32()), &var.shape) }
-            //             TensorDataType::I32 => { create_storage_buf(device, &var.id.to_string(), Some(data.get_data_i32()), &var.shape) }
-            //         }
-            //     }
-            //     VarType::Add => {
-            //         let left = &session.tensors.borrow()[&var.prevs[0]];
-            //         let ltype = left.tensor_data.as_ref().unwrap().dtype();
-            //         let right = &session.tensors.borrow()[&var.prevs[1]];
-            //         let rtype = right.tensor_data.as_ref().unwrap().dtype();
-            //         match (&ltype, &rtype) {
-            //             (&TensorDataType::F32, &TensorDataType::F32) => { create_storage_buf::<f32>(device, &var.id.to_string(), None, &var.shape) }
-            //             (_, _) => { unimplemented!("cannot allocate buffer for addition between {:?} and {:?}", ltype, rtype) }
-            //         }
-            //     }
-            //     VarType::Sub => { todo!() }
-            // };
+            self.tensors.insert(var.id, t);
         }
-    }
 
-    async fn execute_op(&self, device: &wgpu::Device, queue: &wgpu::Queue) {
-        let shader_module = device.create_shader_module(
-            wgpu::ShaderModuleDescriptor {
-                label: Some("add_shader"),
-                source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("wgsl/add.wgsl"))),
-            }
-        );
+        // We also prepare staging buffers and ask them to retrieve data from storage buffer.
+        // The staging buffers are provided only for terminal variables (variables with no outgoing
+        // connection, where `nexts.len() == 0`)
+        let terminal_node_ids: Vec<Uuid> = session.tensors.borrow()
+            .iter()
+            .filter(|(_, v)| v.nexts.borrow().len() == 0)
+            .map(|(_, v)| v.id)
+            .collect();
 
-        let input_0: Vec<f32> = vec![1.0, 2.0, 3.0];
-        let input_1: Vec<f32> = vec![11.0, 22.0, 33.0];
-        let output_0: Vec<f32> = vec![0.0; 3];
+        for id in &terminal_node_ids {
+            let var = &session.tensors.borrow()[id];
+            let staging_buf = match var.dtype {
+                TensorDataType::F32 => { create_staging_buf::<f32>(device, id.to_string().as_str(), &None, &var.shape) }
+                TensorDataType::I32 => { create_staging_buf::<i32>(device, id.to_string().as_str(), &None, &var.shape) }
+            };
+            self.staging_buf.insert(*id, staging_buf);
+        }
 
-        let output_0_staging_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("output_0"),
-            contents: bytemuck::cast_slice(&output_0),
-            usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
-        });
-
-        let input_0_storage_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("input_0"),
-            contents: bytemuck::cast_slice(&input_0),
-            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
-        });
-
-        let input_1_storage_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("input_1"),
-            contents: bytemuck::cast_slice(&input_1),
-            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
-        });
-
-        let output_0_storage_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("output_0"),
-            contents: bytemuck::cast_slice(&output_0),
-            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
-        });
-
-        let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: None,
-            layout: None,
-            module: &shader_module,
-            entry_point: "main",
-        });
-
-        let bind_group_layout = compute_pipeline.get_bind_group_layout(0);
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout: &bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: input_0_storage_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: input_1_storage_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: output_0_storage_buf.as_entire_binding() }
-            ],
-        });
-
-        // LOOP 1
-        // encoder executes multiple pipelines (each op has one pipeline)
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        {
-            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+
+        // Setup compute pass for each variable in topological order. We will skip leaf variables since
+        // the has no operation and only hold values.
+        for id in &sorted_ids {
+            let var = &session.tensors.borrow()[id];
+            if var.var_type == VarType::Leaf {
+                continue;
+            }
+
+            let input_bufs: Vec<&GPUTensor> = var.prevs.iter().map(|id| &self.tensors[&id]).collect();
+            let output_buf = &self.tensors[&var.id];
+
+            // All buffers to bind (all input buffers AND output buffer), required by shaders
+            let mut all_bufs = input_bufs;
+            all_bufs.push(output_buf);
+
+            let mut bind_idx = 0;
+            let bind_group_entries: Vec<wgpu::BindGroupEntry> = all_bufs
+                .iter()
+                .map(|v| {
+                    let entry = wgpu::BindGroupEntry { binding: bind_idx, resource: v.data.buffer.as_entire_binding() };
+                    bind_idx += 1;
+                    entry
+                })
+                .collect();
+
+            let shader_module = device.create_shader_module(
+                wgpu::ShaderModuleDescriptor {
+                    label: Some("add_shader"),
+                    source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("wgsl/add.wgsl"))),
+                }
+            );
+            let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: None,
-                timestamp_writes: None,
+                layout: None,
+                module: &shader_module,
+                entry_point: "main",
             });
-            cpass.set_pipeline(&compute_pipeline);
-            cpass.set_bind_group(0, &bind_group, &[]);
-            cpass.insert_debug_marker("add_pass");
-            cpass.dispatch_workgroups(output_0.len() as u32, 1, 1);
+            let bind_group_layout = compute_pipeline.get_bind_group_layout(0);
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &bind_group_layout,
+                entries: &bind_group_entries,
+            });
+
+            {
+                let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: None,
+                    timestamp_writes: None,
+                });
+                cpass.set_pipeline(&compute_pipeline);
+                cpass.set_bind_group(0, &bind_group, &[]);
+                cpass.insert_debug_marker("add_pass");
+
+                // TODO: use proper workgroups!
+                cpass.dispatch_workgroups(1, 1, 1);
+            }
         }
-        // END OF LOOP 1
 
-        // LOOP 2
-        // Copy buffer (associated to each terminal ops) to its corresponding staging buffer
-        encoder.copy_buffer_to_buffer(&output_0_storage_buf, 0, &output_0_staging_buf, 0, output_0_staging_buf.size());
-        // END OF LOOP 2
+        // copy buf of terminal variables to staging buffers
+        for id in &terminal_node_ids {
+            let out_buf = &self.tensors[id].data.buffer;
+            let staging_buf = &self.staging_buf[id];
+            encoder.copy_buffer_to_buffer(&out_buf, 0, &staging_buf, 0, staging_buf.size());
+        }
 
+        // submit passes
         queue.submit(Some(encoder.finish()));
 
-        // LOOP 3
-        let output_0_staging_slice = output_0_staging_buf.slice(..);
-        let (sender, receiver) = flume::bounded(1);
-        output_0_staging_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
-        // END OF LOOP 2
+        let mut receivers = HashMap::new();
+        for id in &terminal_node_ids {
+            let staging_buf = &self.staging_buf[id];
+            let staging_slice = staging_buf.slice(..);
+
+            let (sender, receiver) = flume::bounded(1);
+            staging_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
+
+            receivers.insert(*id, receiver);
+        }
 
         device.poll(wgpu::Maintain::Wait);
 
-        // LOOP 4: for each output staging
-        if let Ok(Ok(())) = receiver.recv_async().await {
-            let data = output_0_staging_slice.get_mapped_range();
-            // TODO: customize output type accordingly
-            let output_0_result: Vec<f32> = bytemuck::cast_slice(&data).to_vec();
+        for id in &terminal_node_ids {
+            let staging_buf = &self.staging_buf[id];
+            let staging_slice = staging_buf.slice(..);
+            let receiver = &receivers[id];
+            if let Ok(Ok(())) = receiver.recv_async().await {
+                let data = staging_slice.get_mapped_range();
+                // TODO: customize output type accordingly
+                let result: Vec<f32> = bytemuck::cast_slice(&data).to_vec();
 
-            drop(data);
-            output_0_staging_buf.unmap();
+                drop(data);
+                staging_buf.unmap();
 
-            println!("{:?}", output_0_result);
+                println!("{:?}", result);
 
-            Some(output_0_result)
-        } else {
-            panic!("Failed to run on GPU")
-        };
-        // END OF LOOP 4
+                Some(result)
+            } else {
+                panic!("Failed to run on GPU")
+            };
+        }
     }
 }
 
@@ -197,8 +195,8 @@ mod test {
     #[test]
     fn add() {
         let mut sess = Session::new();
-        let a = sess.new_tensor_var(TensorData::F32(vec![1., 2.]), vec![2]).unwrap();
-        let b = sess.new_tensor_var(TensorData::F32(vec![1., 2.]), vec![2]).unwrap();
+        let a = sess.new_tensor_var(TensorData::F32(vec![1., 2., 3.]), vec![3]).unwrap();
+        let b = sess.new_tensor_var(TensorData::F32(vec![1., 2., 3.]), vec![3]).unwrap();
         let c = a.add(&b);
         let mut executor = GPUExecutor::new();
 

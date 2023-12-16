@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum VarType {
     Add,
     Sub,
