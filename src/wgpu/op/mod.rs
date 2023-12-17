@@ -12,7 +12,14 @@ pub struct OpAdd {}
 pub struct OpLeaf {}
 
 impl Op for OpAdd {
-    fn setup_shader(&self, id: Uuid, session: &Session, params: &mut tera::Context) {}
+    fn setup_shader(&self, id: Uuid, session: &Session, params: &mut tera::Context) {
+        let op = &session.tensors.borrow()[&id];
+        let left = &session.tensors.borrow()[&op.prevs[0]];
+        let right = &session.tensors.borrow()[&op.prevs[1]];
+        params.insert("input_0_type", left.dtype.wgsl_type());
+        params.insert("input_1_type", right.dtype.wgsl_type());
+        params.insert("output_0_type", op.dtype.wgsl_type());
+    }
 
     fn workgroups(&self, id: Uuid, session: &Session) -> [u32; 3] {
         let local_size_x = 256;

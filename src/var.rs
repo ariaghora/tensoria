@@ -18,6 +18,15 @@ pub enum TensorDataType {
     I32,
 }
 
+impl TensorDataType {
+    pub fn wgsl_type(&self) -> &str {
+        match self {
+            TensorDataType::F32 => { "f32" }
+            TensorDataType::I32 => { "i32" }
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum TensorData {
     F32(Vec<f32>),
