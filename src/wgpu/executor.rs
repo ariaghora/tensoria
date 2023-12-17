@@ -2,14 +2,17 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::Debug;
+use std::sync::Arc;
 
+use flume::Receiver;
 use include_dir::{Dir, include_dir};
 use uuid::Uuid;
+use wgpu::BufferAsyncError;
 use wgpu::util::DeviceExt;
 
 use crate::session::Session;
 use crate::traits::{Executor, TensorProps};
-use crate::var::{TensorDataType, VarType};
+use crate::var::{TensorData, TensorDataType, Variable, VarType};
 use crate::wgpu::tensor::{create_staging_buf, GPUTensor};
 
 static PROJECT_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/wgpu/wgsl/");
@@ -20,6 +23,7 @@ impl VarType {
         match self {
             VarType::Add => { "add" }
             VarType::Sub => { "sub" }
+            VarType::MatMul => { "matmul" }
             VarType::Leaf => { "leaf" }
         }
     }
@@ -28,6 +32,7 @@ impl VarType {
 pub struct GPUExecutor {
     tensors: HashMap<Uuid, GPUTensor>,
     staging_buf: HashMap<Uuid, wgpu::Buffer>,
+    receivers: HashMap<Uuid, Receiver<Result<(), BufferAsyncError>>>,
 }
 
 impl Executor for GPUExecutor {
@@ -42,8 +47,36 @@ impl Executor for GPUExecutor {
 
 impl GPUExecutor {
     pub fn new() -> Self {
-        let mut executor = Self { tensors: Default::default(), staging_buf: Default::default() };
+        let mut executor = Self {
+            tensors: Default::default(),
+            staging_buf: Default::default(),
+            receivers: Default::default(),
+        };
         executor
+    }
+
+    pub fn fetch(&self, var: Arc<Variable>) -> TensorData {
+        pollster::block_on(self.fetch_async(var))
+    }
+    async fn fetch_async(&self, var: Arc<Variable>) -> TensorData {
+        let staging_buf = &self.staging_buf[&var.id];
+        let staging_slice = staging_buf.slice(..);
+        let receiver = &self.receivers[&var.id];
+        if let Ok(Ok(())) = receiver.recv_async().await {
+            let data = staging_slice.get_mapped_range();
+
+            let res = match var.dtype {
+                TensorDataType::F32 => { TensorData::F32(bytemuck::cast_slice(&data).to_vec()) }
+                TensorDataType::I32 => { unimplemented!() }
+            };
+
+            drop(data);
+            staging_buf.unmap();
+
+            return res;
+        } else {
+            panic!("Failed to run on GPU")
+        };
     }
 
     async fn create_device() -> (wgpu::Device, wgpu::Queue) {
@@ -53,14 +86,17 @@ impl GPUExecutor {
             .await.unwrap();
 
         let mut limits = wgpu::Limits::default();
-        limits.max_storage_buffer_binding_size = 256 << 20;
+        limits.max_storage_buffer_binding_size = 256 << 22;
+        limits.max_buffer_size = 256 << 24;
 
         let features = adapter.features();
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: None,
-                    features: features & wgpu::Features::TIMESTAMP_QUERY & wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES,
+                    features: features &
+                        wgpu::Features::TIMESTAMP_QUERY &
+                        wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES,
                     limits,
                 },
                 None,
@@ -182,7 +218,7 @@ impl GPUExecutor {
         // submit passes
         queue.submit(Some(encoder.finish()));
 
-        let mut receivers = HashMap::new();
+        // let mut receivers = HashMap::new();
         for id in &terminal_node_ids {
             let staging_buf = &self.staging_buf[id];
             let staging_slice = staging_buf.slice(..);
@@ -190,30 +226,10 @@ impl GPUExecutor {
             let (sender, receiver) = flume::bounded(1);
             staging_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
 
-            receivers.insert(*id, receiver);
+            self.receivers.insert(*id, receiver);
         }
 
         device.poll(wgpu::Maintain::Wait);
-
-        for id in &terminal_node_ids {
-            let staging_buf = &self.staging_buf[id];
-            let staging_slice = staging_buf.slice(..);
-            let receiver = &receivers[id];
-            if let Ok(Ok(())) = receiver.recv_async().await {
-                let data = staging_slice.get_mapped_range();
-                // TODO: customize output type accordingly
-                let result: Vec<f32> = bytemuck::cast_slice(&data).to_vec();
-
-                drop(data);
-                staging_buf.unmap();
-
-                println!("{:?}", result);
-
-                Some(result)
-            } else {
-                panic!("Failed to run on GPU")
-            };
-        }
     }
 }
 
@@ -233,5 +249,23 @@ mod test {
         let mut executor = GPUExecutor::new();
 
         executor.execute(&mut sess).unwrap();
+    }
+
+    #[test]
+    fn matmul() {
+        let mut sess = Session::new();
+        let a = sess.new_tensor_var(TensorData::F32(vec![1.0; 100000]), vec![1000, 100]).unwrap();
+        let b = sess.new_tensor_var(TensorData::F32(vec![1.0; 100000]), vec![100, 1000]).unwrap();
+        let c = a.matmul(&b);
+        let mut executor = GPUExecutor::new();
+
+        let tic = std::time::Instant::now();
+        executor.execute(&mut sess).unwrap();
+
+        if let TensorData::F32(val) = &executor.fetch(c) {
+            assert!(val.iter().all(|v| *v == 100.0));
+        } else {
+            panic!("Result should be F32")
+        }
     }
 }

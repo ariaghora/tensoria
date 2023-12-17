@@ -1,5 +1,5 @@
 [package]
-name = "ss_tensoria"
+name = "tensoria"
 version = "0.1.0"
 edition = "2021"
 
@@ -8,7 +8,7 @@ edition = "2021"
 [dependencies]
 uuid = { version = "1.6.1", features = ["v4"] }
 ndarray = { version = "0.15.6" }
-wgpu = { version = "0.18.0" }
+wgpu = { version = "0.18.0", features = ["wgsl"] }
 bytemuck = "1.14.0"
 pollster = "0.3.0"
 flume = "0.11.0"

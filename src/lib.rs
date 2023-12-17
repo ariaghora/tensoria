@@ -3,7 +3,7 @@ pub mod session;
 pub mod var;
 pub mod error;
 pub mod traits;
-mod wgpu;
+pub mod wgpu;
 
 
 #[cfg(test)]

@@ -161,6 +161,7 @@ fn var_op_type_to_executable(var_type: &VarType) -> Box<dyn Op> {
     match var_type {
         VarType::Add => { Box::new(op::OpAdd {}) }
         VarType::Sub => { todo!() }
+        VarType::MatMul => { Box::new(op::OpMatmul {}) }
         VarType::Leaf => { Box::new(op::OpLeaf {}) }
     }
 }

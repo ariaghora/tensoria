@@ -10,6 +10,7 @@ pub enum VarType {
     Add,
     Sub,
     Leaf,
+    MatMul,
 }
 
 #[derive(Debug, Clone)]
@@ -109,8 +110,15 @@ impl Variable {
     pub fn add(&self, other: &Arc<Variable>) -> Arc<Variable> {
         self.binary_op(other, VarType::Add, self.shape.clone())
     }
+
     pub fn sub(&self, other: &Arc<Variable>) -> Arc<Variable> {
         self.binary_op(other, VarType::Sub, self.shape.clone())
+    }
+
+    pub fn matmul(&self, other: &Arc<Variable>) -> Arc<Variable> {
+        // TODO: provide a separate shape validation for all vars
+        let shape = vec![self.shape[0], other.shape[1]];
+        self.binary_op(other, VarType::MatMul, shape)
     }
 }
 
