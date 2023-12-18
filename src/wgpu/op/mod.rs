@@ -55,6 +55,7 @@ impl Op for OpMatmul {
         params.insert("M", &left.shape[0]);
         params.insert("N", &right.shape[1]);
         params.insert("K", &left.shape[1]);
+        params.insert("n_unroll", &8);
     }
 
     fn workgroups(&self, id: Uuid, session: &Session) -> [u32; 3] {

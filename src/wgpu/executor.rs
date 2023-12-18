@@ -249,6 +249,11 @@ mod test {
         let mut executor = GPUExecutor::new();
 
         executor.execute(&mut sess).unwrap();
+        if let TensorData::F32(val) = &executor.fetch(c) {
+            assert_eq!(val, &vec![2., 4., 6.])
+        } else {
+            panic!("Result should be F32")
+        }
     }
 
     #[test]
@@ -257,13 +262,22 @@ mod test {
         let a = sess.new_tensor_var(TensorData::F32(vec![1.0; 100000]), vec![1000, 100]).unwrap();
         let b = sess.new_tensor_var(TensorData::F32(vec![1.0; 100000]), vec![100, 1000]).unwrap();
         let c = a.matmul(&b);
+
+        let x = sess.new_tensor_var(TensorData::F32(vec![1., 2., 3., 4.]), vec![2, 2]).unwrap();
+        let y = sess.new_tensor_var(TensorData::F32(vec![2., 2., 2., 2.]), vec![2, 2]).unwrap();
+        let z = x.matmul(&y);
         let mut executor = GPUExecutor::new();
 
-        let tic = std::time::Instant::now();
         executor.execute(&mut sess).unwrap();
 
         if let TensorData::F32(val) = &executor.fetch(c) {
             assert!(val.iter().all(|v| *v == 100.0));
+        } else {
+            panic!("Result should be F32")
+        }
+
+        if let TensorData::F32(val) = &executor.fetch(z) {
+            assert_eq!(val, &vec![6., 6., 14., 14.]);
         } else {
             panic!("Result should be F32")
         }
