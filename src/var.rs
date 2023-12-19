@@ -11,6 +11,7 @@ pub enum VarType {
     Sub,
     Leaf,
     MatMul,
+    Mul,
 }
 
 #[derive(Debug, Clone)]
@@ -119,6 +120,10 @@ impl Variable {
         // TODO: provide a separate shape validation for all vars
         let shape = vec![self.shape[0], other.shape[1]];
         self.binary_op(other, VarType::MatMul, shape)
+    }
+
+    pub fn mul(&self, other: &Arc<Variable>) -> Arc<Variable> {
+        self.binary_op(other, VarType::Mul, self.shape.clone())
     }
 }
 

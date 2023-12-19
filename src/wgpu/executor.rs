@@ -25,6 +25,7 @@ impl VarType {
             VarType::Sub => { "sub" }
             VarType::MatMul => { "matmul" }
             VarType::Leaf => { "leaf" }
+            VarType::Mul => { "mul" }
         }
     }
 }

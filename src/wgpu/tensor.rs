@@ -7,7 +7,10 @@ use wgpu::util::DeviceExt;
 
 use crate::traits::TensorProps;
 use crate::var::{TensorDataType, Variable, VarType};
-use crate::wgpu::op;
+use crate::wgpu::op::add::OpAdd;
+use crate::wgpu::op::leaf::OpLeaf;
+use crate::wgpu::op::matmul::OpMatmul;
+use crate::wgpu::op::mul::OpMul;
 use crate::wgpu::op::Op;
 
 #[derive(Debug)]
@@ -113,22 +116,24 @@ impl GPUTensor {
             }
         };
 
+        let grad_buf_option = if var.requires_grad {
+            Some(GPUTensorData {
+                dtype: var.dtype.clone(),
+                buffer: match &var.dtype {
+                    TensorDataType::F32 => { create_storage_buf::<f32>(device, &var.id.to_string(), None, &var.shape) }
+                    TensorDataType::I32 => { create_storage_buf::<i32>(device, &var.id.to_string(), None, &var.shape) }
+                },
+                shape: var.shape.clone(),
+            })
+        } else { None };
+
         GPUTensor {
             data: GPUTensorData {
                 dtype: var.dtype.clone(),
                 buffer: data_buf,
                 shape: var.shape.clone(),
             },
-            grad: if var.requires_grad {
-                Some(GPUTensorData {
-                    dtype: var.dtype.clone(),
-                    buffer: match &var.dtype {
-                        TensorDataType::F32 => { create_storage_buf::<f32>(device, &var.id.to_string(), None, &var.shape) }
-                        TensorDataType::I32 => { create_storage_buf::<i32>(device, &var.id.to_string(), None, &var.shape) }
-                    },
-                    shape: var.shape.clone(),
-                })
-            } else { None },
+            grad: grad_buf_option,
             requires_grad: var.requires_grad,
             executable_op: var_op_type_to_executable(&var.var_type),
         }
@@ -152,16 +157,17 @@ impl GPUTensor {
                 )
             } else { None },
             requires_grad,
-            executable_op: Box::new(op::OpLeaf {}),
+            executable_op: Box::new(OpLeaf {}),
         }
     }
 }
 
 fn var_op_type_to_executable(var_type: &VarType) -> Box<dyn Op> {
     match var_type {
-        VarType::Add => { Box::new(op::OpAdd {}) }
+        VarType::Add => { Box::new(OpAdd {}) }
         VarType::Sub => { todo!() }
-        VarType::MatMul => { Box::new(op::OpMatmul {}) }
-        VarType::Leaf => { Box::new(op::OpLeaf {}) }
+        VarType::MatMul => { Box::new(OpMatmul {}) }
+        VarType::Leaf => { Box::new(OpLeaf {}) }
+        VarType::Mul => { Box::new(OpMul {}) }
     }
 }
