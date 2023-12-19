@@ -1,8 +1,8 @@
 @group(0) @binding(0)
-var<storage, read> input_0: array<{{input_0_type}}>;
+var<storage, read_write> input_0: array<{{input_0_type}}>;
 
 @group(0) @binding(1)
-var<storage, read> input_1: array<{{input_1_type}}>;
+var<storage, read_write> input_1: array<{{input_1_type}}>;
 
 @group(0) @binding(2)
 var<storage, read_write> output_0: array<{{output_0_type}}>;

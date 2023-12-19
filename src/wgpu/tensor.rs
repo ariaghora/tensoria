@@ -16,8 +16,8 @@ use crate::wgpu::op::Op;
 #[derive(Debug)]
 pub struct GPUTensorData {
     pub buffer: wgpu::Buffer,
-    dtype: TensorDataType,
-    shape: Vec<usize>,
+    pub(crate) dtype: TensorDataType,
+    pub(crate) shape: Vec<usize>,
 }
 
 impl TensorProps for GPUTensorData {

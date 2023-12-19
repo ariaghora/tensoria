@@ -135,8 +135,8 @@ mod test {
     #[test]
     fn links() {
         let sess = Session::new();
-        let a = sess.new_tensor_var(TensorData::F32(vec![1.0]), vec![]).unwrap();
-        let b = sess.new_tensor_var(TensorData::F32(vec![1.0]), vec![]).unwrap();
+        let a = sess.init_tensor_var(TensorData::F32(vec![1.0]), vec![]).unwrap();
+        let b = sess.init_tensor_var(TensorData::F32(vec![1.0]), vec![]).unwrap();
         let res = a.add(&b);
 
         assert_eq!(a.nexts.borrow().len(), 1);

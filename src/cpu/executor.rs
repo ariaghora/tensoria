@@ -95,7 +95,7 @@ pub struct CPUExecutor {
 }
 
 impl Executor for CPUExecutor {
-    fn execute(&mut self, session: &Session) -> Result<(), Box<dyn Error>> {
+    fn forward(&mut self, session: &Session) -> Result<(), Box<dyn Error>> {
         let sorted_id = session.sorted_ids();
         for id in &sorted_id {
             let var = &session.tensors.borrow()[id].clone();
@@ -115,6 +115,10 @@ impl Executor for CPUExecutor {
         }
         Ok(())
     }
+
+    fn backward(&self, var: &Arc<Variable>) -> Result<(), Box<dyn Error>> {
+        todo!()
+    }
 }
 
 #[cfg(test)]
@@ -129,13 +133,13 @@ mod test {
     #[test]
     fn add() {
         let sess = Session::new();
-        let a = sess.new_tensor_var(TensorData::F32(vec![1.0, 2.0]), vec![2]).unwrap();
-        let b = sess.new_tensor_var(TensorData::F32(vec![3.0, 4.0]), vec![2]).unwrap();
+        let a = sess.init_tensor_var(TensorData::F32(vec![1.0, 2.0]), vec![2]).unwrap();
+        let b = sess.init_tensor_var(TensorData::F32(vec![3.0, 4.0]), vec![2]).unwrap();
 
         let res = a.add(&b);
 
         let mut executor = CPUExecutor { tensors: HashMap::new() };
-        executor.execute(&sess).unwrap();
+        executor.forward(&sess).unwrap();
         let res_cpu = executor.tensors.get(&res.id).unwrap();
 
         if let CPUTensorData::F32(data) = &res_cpu.data {
@@ -150,11 +154,11 @@ mod test {
     #[test]
     fn add_self() {
         let sess = Session::new();
-        let a = sess.new_tensor_var(TensorData::F32(vec![1.0, 2.0]), vec![2]).unwrap();
+        let a = sess.init_tensor_var(TensorData::F32(vec![1.0, 2.0]), vec![2]).unwrap();
         let b = a.add(&a).add(&a);
 
         let mut executor = CPUExecutor { tensors: HashMap::new() };
-        executor.execute(&sess).unwrap();
+        executor.forward(&sess).unwrap();
         let res_cpu = executor.tensors.get(&b.id).unwrap();
         if let CPUTensorData::F32(data) = &res_cpu.data {
             assert_eq!(data.as_slice().unwrap(), vec![3.0, 6.0])

@@ -35,16 +35,33 @@ mod test {
     #[test]
     fn mul() {
         let mut sess = Session::new();
-        let a = sess.new_tensor_var(TensorData::F32(vec![1., 2., 3.]), vec![3]).unwrap();
-        let b = sess.new_tensor_var(TensorData::F32(vec![1., 2., 3.]), vec![3]).unwrap();
+        let a = sess.init_tensor_var(TensorData::F32(vec![1., 2., 3.]), vec![3]).unwrap();
+        let b = sess.init_tensor_var(TensorData::F32(vec![1., 2., 3.]), vec![3]).unwrap();
         let c = a.mul(&b);
         let mut executor = GPUExecutor::new();
 
-        executor.execute(&mut sess).unwrap();
+        executor.forward(&mut sess).unwrap();
         if let TensorData::F32(val) = &executor.fetch(c) {
             assert_eq!(val, &vec![1., 4., 9.])
         } else {
             panic!("Result should be F32")
         }
+    }
+
+    #[test]
+    fn mul_grad() {
+        let mut sess = Session::new();
+        let a = sess.init_tensor_var(TensorData::F32(vec![1., 2., 3.]), vec![3]).unwrap();
+        let b = sess.init_tensor_var_with_grad(TensorData::F32(vec![1., 2., 3.]), vec![3]).unwrap();
+        let c = a.mul(&b);
+
+        assert!(c.requires_grad);
+        let mut executor = GPUExecutor::new();
+
+        executor.forward(&mut sess).unwrap();
+        // grad tensor data should be created
+        assert!(&executor.tensors[&c.id].grad.is_some());
+
+        executor.backward(&c).unwrap();
     }
 }

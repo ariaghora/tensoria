@@ -4,6 +4,7 @@ use std::fmt::{Display, Formatter};
 pub enum TensoriaError {
     CannotReshapeError,
     AccessingMismatchedType,
+    DeviceNotCreated,
 }
 
 
