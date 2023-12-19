@@ -4,17 +4,12 @@
 
 
 <p align="center">
-A tensor manipulation library running on CPU and GPU, self-contained, in pure rust
+A tensor manipulation library running on GPU, self-contained, in pure rust
 </p>
 
 <p align="center">
     <img src="assets/img.png" width="150"/>
 </p>
-
-Tensoria provides two execution engines:
-
-- GPUExecutor with [wgpu]() backend
-- CPUExecutor with [ndarray]() backend
 
 ## Example
 
