@@ -8,9 +8,9 @@ pub struct OpMatmul {}
 
 impl Op for OpMatmul {
     fn setup_shader(&self, id: Uuid, session: &Session, params: &mut Context) {
-        let op = &session.tensors.borrow()[&id];
-        let left = &session.tensors.borrow()[&op.prevs[0]];
-        let right = &session.tensors.borrow()[&op.prevs[1]];
+        let op = &session.variables.borrow()[&id];
+        let left = &session.variables.borrow()[&op.prevs[0]];
+        let right = &session.variables.borrow()[&op.prevs[1]];
         params.insert("input_0_type", left.dtype.wgsl_type());
         params.insert("input_1_type", right.dtype.wgsl_type());
         params.insert("output_0_type", op.dtype.wgsl_type());
@@ -23,7 +23,7 @@ impl Op for OpMatmul {
     fn workgroups(&self, id: Uuid, session: &Session) -> [u32; 3] {
         let local_size_x_y = 16;
 
-        let out_shape = &session.tensors.borrow()[&id].shape;
+        let out_shape = &session.variables.borrow()[&id].shape;
         let m = out_shape[0];
         let n = out_shape[1];
         let num_workgroups_x = (n + local_size_x_y - 1) / local_size_x_y;

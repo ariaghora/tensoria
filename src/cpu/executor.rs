@@ -98,7 +98,7 @@ impl Executor for CPUExecutor {
     fn forward(&mut self, session: &Session) -> Result<(), Box<dyn Error>> {
         let sorted_id = session.sorted_ids();
         for id in &sorted_id {
-            let var = &session.tensors.borrow()[id].clone();
+            let var = &session.variables.borrow()[id].clone();
             let var_type = var.var_type.clone();
             let var_prevs = var.prevs.clone();
             match var_type {

@@ -10,7 +10,7 @@ use crate::error::TensoriaError;
 use crate::var::{TensorData, Variable, VarType};
 
 pub struct Session {
-    pub(crate) tensors: Rc<RefCell<HashMap<Uuid, Arc<Variable>>>>,
+    pub(crate) variables: Rc<RefCell<HashMap<Uuid, Arc<Variable>>>>,
 }
 
 pub struct TensorVarSetup {}
@@ -18,7 +18,7 @@ pub struct TensorVarSetup {}
 impl Session {
     pub fn new() -> Self {
         Session {
-            tensors: Rc::new(RefCell::new(HashMap::new())),
+            variables: Rc::new(RefCell::new(HashMap::new())),
         }
     }
 
@@ -42,13 +42,13 @@ impl Session {
             tensor_data: Some(data),
             dtype,
             shape,
-            session: Rc::downgrade(&self.tensors),
+            session: Rc::downgrade(&self.variables),
             prevs: vec![],
             nexts: Rc::new(RefCell::new(Vec::new())),
             var_type: VarType::Leaf,
             requires_grad,
         });
-        self.tensors.borrow_mut().insert(tensor.id, tensor.clone());
+        self.variables.borrow_mut().insert(tensor.id, tensor.clone());
         Ok(tensor)
     }
 
@@ -65,7 +65,7 @@ impl Session {
             return;
         }
 
-        let var = &self.tensors.borrow()[&root].prevs.clone();
+        let var = &self.variables.borrow()[&root].prevs.clone();
         for p in var {
             self.dfs(*p, out);
         }
@@ -73,7 +73,7 @@ impl Session {
     }
 
     pub fn sorted_ids(&self) -> Vec<Uuid> {
-        let terminal_ids: Vec<Uuid> = self.tensors.borrow()
+        let terminal_ids: Vec<Uuid> = self.variables.borrow()
             .iter()
             .filter(|(_, v)| v.nexts.borrow().len() == 0)
             .map(|(_, v)| v.id)
@@ -87,7 +87,7 @@ impl Session {
     }
 
     pub fn terminal_ids(&self) -> Vec<Uuid> {
-        let terminal_node_ids: Vec<Uuid> = self.tensors.borrow()
+        let terminal_node_ids: Vec<Uuid> = self.variables.borrow()
             .iter()
             .filter(|(_, v)| v.nexts.borrow().len() == 0)
             .map(|(_, v)| v.id)
