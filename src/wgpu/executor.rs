@@ -15,7 +15,7 @@ use wgpu::util::DeviceExt;
 use crate::session::Session;
 use crate::traits::{Executor, TensorProps};
 use crate::var::{TensorData, TensorDataType, Variable, VarType};
-use crate::wgpu::tensor::{create_staging_buf, GPUTensor};
+use crate::wgpu::tensor::{create_staging_buf, create_storage_buf, GPUTensor, GPUTensorData};
 
 static PROJECT_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/wgpu/wgsl/");
 
@@ -35,6 +35,7 @@ impl VarType {
 pub struct GPUExecutor {
     pub tensors: Rc<RefCell<HashMap<Uuid, GPUTensor>>>,
     staging_buf: Rc<RefCell<HashMap<Uuid, wgpu::Buffer>>>,
+    grad_staging_buf: Rc<RefCell<HashMap<Uuid, wgpu::Buffer>>>,
     receivers: Rc<RefCell<HashMap<Uuid, Receiver<Result<(), BufferAsyncError>>>>>,
     device: Rc<Device>,
     queue: Rc<Queue>,
@@ -49,8 +50,30 @@ impl Executor for GPUExecutor {
         Ok(())
     }
 
-    fn backward(&self, var: &Arc<Variable>) -> Result<(), Box<dyn Error>> {
+    fn backward(&self, var: &Arc<Variable>, session: &Session) -> Result<(), Box<dyn Error>> {
         let (device, queue) = (&self.device, &self.queue);
+
+        let num_elem = var.shape.iter().fold(1, |x, y| x * y);
+        let ones_buf = match var.dtype {
+            TensorDataType::F32 => {
+                create_storage_buf(&device, var.id.to_string().as_str(), Some(&vec![1.0; num_elem]), &var.shape)
+            }
+            TensorDataType::I32 => { todo!() }
+        };
+
+        // set grad on tensor with var.id to all ones
+        let ones = GPUTensorData {
+            buffer: ones_buf,
+            dtype: var.dtype.clone(),
+            shape: var.shape.clone(),
+        };
+        if let Some(tensor) = self.tensors.borrow_mut().get_mut(&var.id) {
+            tensor.grad = Some(ones);
+        } else {
+            if !var.requires_grad { panic!("Calling backward on tensor not requiring grad"); }
+        }
+
+        pollster::block_on(self.backward_inner(&var, &device, &queue, &session));
         Ok(())
     }
 }
@@ -62,6 +85,7 @@ impl GPUExecutor {
         let mut executor = Self {
             tensors: Default::default(),
             staging_buf: Default::default(),
+            grad_staging_buf: Default::default(),
             receivers: Default::default(),
             device: Rc::new(device),
             queue: Rc::new(queue),
@@ -97,22 +121,25 @@ impl GPUExecutor {
 
     async fn create_device() -> (wgpu::Device, wgpu::Queue) {
         let instance = wgpu::Instance::default();
+
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions::default())
             .await.unwrap();
 
-        let mut limits = wgpu::Limits::default();
-        limits.max_storage_buffer_binding_size = 256 << 22;
-        limits.max_buffer_size = 256 << 24;
+        let mut limits = wgpu::Limits::downlevel_defaults();
+        // limits.max_storage_buffer_binding_size = 256 << 22;
+        // limits.max_buffer_size = 2147483647;
+        limits.max_texture_dimension_1d = 4096;
+        limits.max_texture_dimension_2d = 4096;
 
         let features = adapter.features();
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: None,
-                    features: features &
-                        wgpu::Features::TIMESTAMP_QUERY &
-                        wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES,
+                    features: features,// &
+                    // wgpu::Features::TIMESTAMP_QUERY &
+                    // wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES,
                     limits,
                 },
                 None,
@@ -129,29 +156,69 @@ impl GPUExecutor {
             let var = &session.variables.borrow()[id];
             let t = GPUTensor::from_var(var, device);
             tensors.insert(var.id, t);
-        }
 
-        // We also prepare staging buffers and ask them to retrieve data from storage buffer.
-        // The staging buffers are provided only for terminal variables (variables with no outgoing
-        // connection, where `nexts.len() == 0`)
-        let terminal_node_ids = session.terminal_ids();
-        for id in &terminal_node_ids {
-            let var = &session.variables.borrow()[id];
+            // We also prepare staging buffers and ask them to retrieve data from storage buffer.
             let staging_buf = match var.dtype {
                 TensorDataType::F32 => { create_staging_buf::<f32>(device, id.to_string().as_str(), &None, &var.shape) }
                 TensorDataType::I32 => { create_staging_buf::<i32>(device, id.to_string().as_str(), &None, &var.shape) }
             };
             self.staging_buf.borrow_mut().insert(*id, staging_buf);
+
+            if var.requires_grad {
+                let grad_staging_buf = match var.dtype {
+                    TensorDataType::F32 => { create_staging_buf::<f32>(device, id.to_string().as_str(), &None, &var.shape) }
+                    TensorDataType::I32 => { create_staging_buf::<i32>(device, id.to_string().as_str(), &None, &var.shape) }
+                };
+                self.grad_staging_buf.borrow_mut().insert(*id, grad_staging_buf);
+            }
         }
     }
 
-    async fn backward_inner(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, session: &Session) {
-        let sorted_back_ids: Vec<Uuid> = session.sorted_ids().into_iter().rev().collect();
+    async fn backward_inner(&self, var: &Variable, device: &wgpu::Device, queue: &wgpu::Queue, session: &Session) {
+        let tensors = self.tensors.borrow_mut();
+
+        // let sorted_back_ids: Vec<Uuid> = session.sorted_ids().into_iter().rev().collect();
+
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+
+
+        let id = var.id;
+        // for id in &sorted_back_ids {
+        let var = &session.variables.borrow()[&id];
+
+        let input_tensors: Vec<&wgpu::Buffer> = var.prevs.iter().map(|id| &tensors[&id].data.buffer).collect();
+        let grad_tensors: Vec<Option<&wgpu::Buffer>> = var.prevs.iter().map(|id| match &tensors[&id].grad {
+            None => { None }
+            Some(t) => { Some(&t.buffer) }
+        }).collect();
+        let current_tensor = &tensors[&var.id].data.buffer;
+        let current_grad = match &tensors[&var.id].grad {
+            None => { None }
+            Some(t) => { Some(&t.buffer) }
+        };
+
+
+        let op_str = var.var_type.op_str();
+        let templ_str = PROJECT_DIR
+            .get_file(format!("{}_backward.wgsl", op_str))
+            .unwrap()
+            .contents_utf8()
+            .unwrap();
+
+        let mut templ = tera::Tera::default();
+        templ.add_raw_template(op_str, templ_str).unwrap();
+
+        let mut params = tera::Context::new();
+        // Ask current tensor to setup shader template parameters
+        tensors[&id].executable_op.setup_shader_backward(var.id, session, &mut params);
+        let shader_src = templ.render(op_str, &params).unwrap();
+        println!("{}", shader_src)
+        // }
     }
+
     async fn execute_inner(&self, device: &wgpu::Device, queue: &wgpu::Queue, session: &Session) {
         let sorted_ids = session.sorted_ids();
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-
 
         let tensors = self.tensors.borrow_mut();
 
@@ -196,7 +263,7 @@ impl GPUExecutor {
             let mut params = tera::Context::new();
 
             // Ask current tensor to setup shader template parameters
-            current_tensor.executable_op.setup_shader(var.id, session, &mut params);
+            current_tensor.executable_op.setup_shader_forward(var.id, session, &mut params);
 
             let shader_src = templ.render(op_str, &params).unwrap();
 
@@ -228,6 +295,7 @@ impl GPUExecutor {
                 cpass.set_bind_group(0, &bind_group, &[]);
 
                 let [x, y, z] = current_tensor.executable_op.workgroups(var.id, &session);
+                println!("{}, {}, {}", x, y, z);
                 cpass.dispatch_workgroups(x, y, z);
             }
         }
@@ -235,7 +303,7 @@ impl GPUExecutor {
         let terminal_node_ids = session.terminal_ids();
 
         // copy buf of terminal variables to staging buffers
-        for id in &terminal_node_ids {
+        for id in &sorted_ids {
             let out_buf = &tensors[id].data.buffer;
             let staging_buf = &self.staging_buf.borrow()[id];
             encoder.copy_buffer_to_buffer(&out_buf, 0, &staging_buf, 0, staging_buf.size());
@@ -245,7 +313,7 @@ impl GPUExecutor {
         queue.submit(Some(encoder.finish()));
 
         // let mut receivers = HashMap::new();
-        for id in &terminal_node_ids {
+        for id in &sorted_ids {
             let staging_buf = &self.staging_buf.borrow()[id];
             let staging_slice = staging_buf.slice(..);
 

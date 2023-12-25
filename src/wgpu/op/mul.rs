@@ -6,13 +6,29 @@ use crate::wgpu::op::Op;
 pub struct OpMul {}
 
 impl Op for OpMul {
-    fn setup_shader(&self, id: Uuid, session: &Session, params: &mut tera::Context) {
+    fn setup_shader_forward(&self, id: Uuid, session: &Session, params: &mut tera::Context) {
         let op = &session.variables.borrow()[&id];
         let left = &session.variables.borrow()[&op.prevs[0]];
         let right = &session.variables.borrow()[&op.prevs[1]];
         params.insert("input_0_type", left.dtype.wgsl_type());
         params.insert("input_1_type", right.dtype.wgsl_type());
         params.insert("output_0_type", op.dtype.wgsl_type());
+    }
+
+    fn setup_shader_backward(&self, id: Uuid, session: &Session, params: &mut tera::Context) {
+        let op = &session.variables.borrow()[&id];
+        let left = &session.variables.borrow()[&op.prevs[0]];
+        let right = &session.variables.borrow()[&op.prevs[1]];
+        params.insert("input_0_type", left.dtype.wgsl_type());
+        params.insert("grad_0_type", left.dtype.wgsl_type());
+        params.insert("input_1_type", right.dtype.wgsl_type());
+        params.insert("grad_1_type", right.dtype.wgsl_type());
+        params.insert("output_0_grad_type", op.dtype.wgsl_type());
+
+        let left_var = &session.variables.borrow()[&id];
+        if left_var.requires_grad {
+            params.insert("left_requires_grad", &true);
+        }
     }
 
     fn workgroups(&self, id: Uuid, session: &Session) -> [u32; 3] {
@@ -62,6 +78,6 @@ mod test {
         // grad tensor data should be created
         assert!(&executor.tensors.borrow()[&c.id].grad.is_some());
 
-        executor.backward(&c).unwrap();
+        executor.backward(&c, &sess).unwrap();
     }
 }

@@ -1,3 +1,4 @@
+use tera::Context;
 use uuid::Uuid;
 
 use crate::session::Session;
@@ -6,13 +7,17 @@ use crate::wgpu::op::Op;
 pub struct OpAdd {}
 
 impl Op for OpAdd {
-    fn setup_shader(&self, id: Uuid, session: &Session, params: &mut tera::Context) {
+    fn setup_shader_forward(&self, id: Uuid, session: &Session, params: &mut tera::Context) {
         let op = &session.variables.borrow()[&id];
         let left = &session.variables.borrow()[&op.prevs[0]];
         let right = &session.variables.borrow()[&op.prevs[1]];
         params.insert("input_0_type", left.dtype.wgsl_type());
         params.insert("input_1_type", right.dtype.wgsl_type());
         params.insert("output_0_type", op.dtype.wgsl_type());
+    }
+
+    fn setup_shader_backward(&self, id: Uuid, session: &Session, params: &mut Context) {
+        todo!()
     }
 
     fn workgroups(&self, id: Uuid, session: &Session) -> [u32; 3] {
