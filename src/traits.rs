@@ -11,5 +11,5 @@ pub trait TensorProps {
 
 pub trait Executor {
     fn forward(&mut self, session: &Session) -> Result<(), Box<dyn Error>>;
-    fn backward(&self, var: &Arc<Variable>) -> Result<(), Box<dyn Error>>;
+    fn backward(&self, var: &Arc<Variable>, session: &Session) -> Result<(), Box<dyn Error>>;
 }
