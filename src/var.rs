@@ -23,8 +23,8 @@ pub enum TensorDataType {
 impl TensorDataType {
     pub fn wgsl_type(&self) -> &str {
         match self {
-            TensorDataType::F32 => { "f32" }
-            TensorDataType::I32 => { "i32" }
+            TensorDataType::F32 => "f32",
+            TensorDataType::I32 => "i32",
         }
     }
 }
@@ -38,26 +38,34 @@ pub enum TensorData {
 impl TensorData {
     pub(crate) fn len(&self) -> usize {
         match self {
-            TensorData::F32(val) => { val.len() }
-            TensorData::I32(val) => { val.len() }
+            TensorData::F32(val) => val.len(),
+            TensorData::I32(val) => val.len(),
         }
     }
 
     pub fn dtype(&self) -> TensorDataType {
         match self {
-            TensorData::F32(_) => { TensorDataType::F32 }
-            TensorData::I32(_) => { TensorDataType::I32 }
+            TensorData::F32(_) => TensorDataType::F32,
+            TensorData::I32(_) => TensorDataType::I32,
         }
     }
 
     pub fn get_data_f32<'a, 'b>(&'a self) -> &'b Vec<f32>
-        where 'a: 'b {
-        if let TensorData::F32(val) = self { return val; }
+    where
+        'a: 'b,
+    {
+        if let TensorData::F32(val) = self {
+            return val;
+        }
         panic!("Attempting to get f32 but the tensor is of different type")
     }
     pub fn get_data_i32<'a, 'b>(&'a self) -> &'b Vec<i32>
-        where 'a: 'b {
-        if let TensorData::I32(val) = self { return val; }
+    where
+        'a: 'b,
+    {
+        if let TensorData::I32(val) = self {
+            return val;
+        }
         panic!("Attempting to get f32 but the tensor is of different type")
     }
 }
@@ -83,8 +91,13 @@ impl Variable {
         output_shape: Vec<usize>,
     ) -> Arc<Variable> {
         let output_dtype = match (&self.dtype, &other.dtype) {
-            (TensorDataType::F32, TensorDataType::F32) => { TensorDataType::F32 }
-            _ => unimplemented!("cannot perform {:?} between {:?} and {:?}", var_type, &self.dtype, &other.dtype)
+            (TensorDataType::F32, TensorDataType::F32) => TensorDataType::F32,
+            _ => unimplemented!(
+                "cannot perform {:?} between {:?} and {:?}",
+                var_type,
+                &self.dtype,
+                &other.dtype
+            ),
         };
 
         let result_tensor = Arc::new(Variable {
@@ -103,7 +116,9 @@ impl Variable {
         other.nexts.borrow_mut().push(self.id);
 
         if let Some(session) = self.session.upgrade() {
-            session.borrow_mut().insert(result_tensor.id, result_tensor.clone());
+            session
+                .borrow_mut()
+                .insert(result_tensor.id, result_tensor.clone());
         }
         result_tensor
     }
@@ -135,8 +150,12 @@ mod test {
     #[test]
     fn links() {
         let sess = Session::new();
-        let a = sess.init_tensor_var(TensorData::F32(vec![1.0]), vec![]).unwrap();
-        let b = sess.init_tensor_var(TensorData::F32(vec![1.0]), vec![]).unwrap();
+        let a = sess
+            .init_tensor_var(TensorData::F32(vec![1.0]), vec![])
+            .unwrap();
+        let b = sess
+            .init_tensor_var(TensorData::F32(vec![1.0]), vec![])
+            .unwrap();
         let res = a.add(&b);
 
         assert_eq!(a.nexts.borrow().len(), 1);

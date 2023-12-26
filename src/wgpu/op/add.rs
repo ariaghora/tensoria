@@ -16,7 +16,7 @@ impl Op for OpAdd {
         params.insert("output_0_type", op.dtype.wgsl_type());
     }
 
-    fn setup_shader_backward(&self, id: Uuid, session: &Session, params: &mut Context) {
+    fn setup_shader_backward(&self, _id: Uuid, _session: &Session, _params: &mut Context) {
         todo!()
     }
 

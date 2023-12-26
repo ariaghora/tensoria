@@ -51,8 +51,12 @@ mod test {
     #[test]
     fn mul() {
         let mut sess = Session::new();
-        let a = sess.init_tensor_var(TensorData::F32(vec![1., 2., 3.]), vec![3]).unwrap();
-        let b = sess.init_tensor_var(TensorData::F32(vec![1., 2., 3.]), vec![3]).unwrap();
+        let a = sess
+            .init_tensor_var(TensorData::F32(vec![1., 2., 3.]), vec![3])
+            .unwrap();
+        let b = sess
+            .init_tensor_var(TensorData::F32(vec![1., 2., 3.]), vec![3])
+            .unwrap();
         let c = a.mul(&b);
         let mut executor = GPUExecutor::new();
 
@@ -67,8 +71,12 @@ mod test {
     #[test]
     fn mul_grad() {
         let mut sess = Session::new();
-        let a = sess.init_tensor_var(TensorData::F32(vec![1., 2., 3.]), vec![3]).unwrap();
-        let b = sess.init_tensor_var_with_grad(TensorData::F32(vec![1., 2., 3.]), vec![3]).unwrap();
+        let a = sess
+            .init_tensor_var(TensorData::F32(vec![1., 2., 3.]), vec![3])
+            .unwrap();
+        let b = sess
+            .init_tensor_var_with_grad(TensorData::F32(vec![1., 2., 3.]), vec![3])
+            .unwrap();
         let c = a.mul(&b);
 
         assert!(c.requires_grad);

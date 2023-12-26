@@ -2,11 +2,11 @@ use std::borrow::Cow;
 use std::fmt::Debug;
 use std::sync::Arc;
 
-use wgpu::Device;
 use wgpu::util::DeviceExt;
+use wgpu::Device;
 
 use crate::traits::TensorProps;
-use crate::var::{TensorDataType, Variable, VarType};
+use crate::var::{TensorDataType, VarType, Variable};
 use crate::wgpu::op::add::OpAdd;
 use crate::wgpu::op::leaf::OpLeaf;
 use crate::wgpu::op::matmul::OpMatmul;
@@ -102,30 +102,42 @@ pub fn create_staging_buf<'a, T: bytemuck::Pod + Default + Debug>(
 impl GPUTensor {
     pub fn from_var(var: &Arc<Variable>, device: &Device) -> Self {
         let data_buf = match &var.dtype {
-            TensorDataType::F32 => {
-                match &var.tensor_data {
-                    None => { create_storage_buf::<f32>(device, &var.id.to_string(), None, &var.shape) }
-                    Some(data) => { create_storage_buf(device, &var.id.to_string(), Some(data.get_data_f32()), &var.shape) }
-                }
-            }
-            TensorDataType::I32 => {
-                match &var.tensor_data {
-                    None => { create_storage_buf::<i32>(device, &var.id.to_string(), None, &var.shape) }
-                    Some(data) => { create_storage_buf(device, &var.id.to_string(), Some(data.get_data_f32()), &var.shape) }
-                }
-            }
+            TensorDataType::F32 => match &var.tensor_data {
+                None => create_storage_buf::<f32>(device, &var.id.to_string(), None, &var.shape),
+                Some(data) => create_storage_buf(
+                    device,
+                    &var.id.to_string(),
+                    Some(data.get_data_f32()),
+                    &var.shape,
+                ),
+            },
+            TensorDataType::I32 => match &var.tensor_data {
+                None => create_storage_buf::<i32>(device, &var.id.to_string(), None, &var.shape),
+                Some(data) => create_storage_buf(
+                    device,
+                    &var.id.to_string(),
+                    Some(data.get_data_f32()),
+                    &var.shape,
+                ),
+            },
         };
 
         let grad_buf_option = if var.requires_grad {
             Some(GPUTensorData {
                 dtype: var.dtype.clone(),
                 buffer: match &var.dtype {
-                    TensorDataType::F32 => { create_storage_buf::<f32>(device, &var.id.to_string(), None, &var.shape) }
-                    TensorDataType::I32 => { create_storage_buf::<i32>(device, &var.id.to_string(), None, &var.shape) }
+                    TensorDataType::F32 => {
+                        create_storage_buf::<f32>(device, &var.id.to_string(), None, &var.shape)
+                    }
+                    TensorDataType::I32 => {
+                        create_storage_buf::<i32>(device, &var.id.to_string(), None, &var.shape)
+                    }
                 },
                 shape: var.shape.clone(),
             })
-        } else { None };
+        } else {
+            None
+        };
 
         GPUTensor {
             data: GPUTensorData {
@@ -149,13 +161,18 @@ impl GPUTensor {
                 Some(GPUTensorData {
                     dtype: TensorDataType::F32,
                     buffer: match dtype {
-                        TensorDataType::F32 => { create_storage_buf::<f32>(device, "", None, &data_shape) }
-                        TensorDataType::I32 => { create_storage_buf::<i32>(device, "", None, &data_shape) }
+                        TensorDataType::F32 => {
+                            create_storage_buf::<f32>(device, "", None, &data_shape)
+                        }
+                        TensorDataType::I32 => {
+                            create_storage_buf::<i32>(device, "", None, &data_shape)
+                        }
                     },
                     shape: data_shape.clone(),
-                }
-                )
-            } else { None },
+                })
+            } else {
+                None
+            },
             requires_grad,
             executable_op: Box::new(OpLeaf {}),
         }
@@ -164,10 +181,12 @@ impl GPUTensor {
 
 fn var_op_type_to_executable(var_type: &VarType) -> Box<dyn Op> {
     match var_type {
-        VarType::Add => { Box::new(OpAdd {}) }
-        VarType::Sub => { todo!() }
-        VarType::MatMul => { Box::new(OpMatmul {}) }
-        VarType::Leaf => { Box::new(OpLeaf {}) }
-        VarType::Mul => { Box::new(OpMul {}) }
+        VarType::Add => Box::new(OpAdd {}),
+        VarType::Sub => {
+            todo!()
+        }
+        VarType::MatMul => Box::new(OpMatmul {}),
+        VarType::Leaf => Box::new(OpLeaf {}),
+        VarType::Mul => Box::new(OpMul {}),
     }
 }

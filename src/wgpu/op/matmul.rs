@@ -20,7 +20,7 @@ impl Op for OpMatmul {
         params.insert("n_unroll", &1);
     }
 
-    fn setup_shader_backward(&self, id: Uuid, session: &Session, params: &mut Context) {
+    fn setup_shader_backward(&self, _id: Uuid, _session: &Session, _params: &mut Context) {
         todo!()
     }
 
@@ -33,7 +33,6 @@ impl Op for OpMatmul {
         let num_workgroups_x = (n + local_size_x_y - 1) / local_size_x_y;
         let num_workgroups_y = (m + local_size_x_y - 1) / local_size_x_y;
         let wg = [num_workgroups_x as u32, num_workgroups_y as u32, 1];
-        let wg = [(m as f32 / local_size_x_y as f32).ceil() as u32, (n as f32 / local_size_x_y as f32).ceil() as u32, 1];
         return wg;
     }
 }

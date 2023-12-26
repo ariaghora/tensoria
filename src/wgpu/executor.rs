@@ -2,19 +2,17 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::error::Error;
-use std::fmt::Debug;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use flume::Receiver;
-use include_dir::{Dir, include_dir};
+use include_dir::{include_dir, Dir};
 use uuid::Uuid;
 use wgpu::{BufferAsyncError, Device, Queue};
-use wgpu::util::DeviceExt;
 
 use crate::session::Session;
-use crate::traits::{Executor, TensorProps};
-use crate::var::{TensorData, TensorDataType, Variable, VarType};
+use crate::traits::Executor;
+use crate::var::{TensorData, TensorDataType, VarType, Variable};
 use crate::wgpu::tensor::{create_staging_buf, create_storage_buf, GPUTensor, GPUTensorData};
 
 static PROJECT_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/wgpu/wgsl/");
@@ -22,11 +20,11 @@ static PROJECT_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/wgpu/wgsl/")
 impl VarType {
     pub fn op_str<'a>(&self) -> &'a str {
         match self {
-            VarType::Add => { "add" }
-            VarType::Sub => { "sub" }
-            VarType::MatMul => { "matmul" }
-            VarType::Leaf => { "leaf" }
-            VarType::Mul => { "mul" }
+            VarType::Add => "add",
+            VarType::Sub => "sub",
+            VarType::MatMul => "matmul",
+            VarType::Leaf => "leaf",
+            VarType::Mul => "mul",
         }
     }
 }
@@ -41,7 +39,6 @@ pub struct GPUExecutor {
     queue: Rc<Queue>,
 }
 
-
 impl Executor for GPUExecutor {
     fn forward(&mut self, session: &Session) -> Result<(), Box<dyn Error>> {
         let (device, queue) = (&self.device, &self.queue);
@@ -50,15 +47,20 @@ impl Executor for GPUExecutor {
         Ok(())
     }
 
-    fn backward(&self, var: &Arc<Variable>, session: &Session) -> Result<(), Box<dyn Error>> {
+    fn backward(&mut self, var: &Arc<Variable>, session: &Session) -> Result<(), Box<dyn Error>> {
         let (device, queue) = (&self.device, &self.queue);
 
         let num_elem = var.shape.iter().fold(1, |x, y| x * y);
         let ones_buf = match var.dtype {
-            TensorDataType::F32 => {
-                create_storage_buf(&device, var.id.to_string().as_str(), Some(&vec![1.0; num_elem]), &var.shape)
+            TensorDataType::F32 => create_storage_buf(
+                &device,
+                var.id.to_string().as_str(),
+                Some(&vec![1.0; num_elem]),
+                &var.shape,
+            ),
+            TensorDataType::I32 => {
+                todo!()
             }
-            TensorDataType::I32 => { todo!() }
         };
 
         // set grad on tensor with var.id to all ones
@@ -70,7 +72,9 @@ impl Executor for GPUExecutor {
         if let Some(tensor) = self.tensors.borrow_mut().get_mut(&var.id) {
             tensor.grad = Some(ones);
         } else {
-            if !var.requires_grad { panic!("Calling backward on tensor not requiring grad"); }
+            if !var.requires_grad {
+                panic!("Calling backward on tensor not requiring grad");
+            }
         }
 
         pollster::block_on(self.backward_inner(&var, &device, &queue, &session));
@@ -78,11 +82,10 @@ impl Executor for GPUExecutor {
     }
 }
 
-
 impl GPUExecutor {
     pub fn new() -> Self {
         let (device, queue) = pollster::block_on(Self::create_device());
-        let mut executor = Self {
+        let executor = Self {
             tensors: Default::default(),
             staging_buf: Default::default(),
             grad_staging_buf: Default::default(),
@@ -106,8 +109,10 @@ impl GPUExecutor {
             let data = staging_slice.get_mapped_range();
 
             let res = match var.dtype {
-                TensorDataType::F32 => { TensorData::F32(bytemuck::cast_slice(&data).to_vec()) }
-                TensorDataType::I32 => { unimplemented!() }
+                TensorDataType::F32 => TensorData::F32(bytemuck::cast_slice(&data).to_vec()),
+                TensorDataType::I32 => {
+                    unimplemented!()
+                }
             };
 
             drop(data);
@@ -124,7 +129,8 @@ impl GPUExecutor {
 
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions::default())
-            .await.unwrap();
+            .await
+            .unwrap();
 
         let mut limits = wgpu::Limits::downlevel_defaults();
         // limits.max_storage_buffer_binding_size = 256 << 22;
@@ -137,13 +143,15 @@ impl GPUExecutor {
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: None,
-                    features: features,// &
+                    features: features, // &
                     // wgpu::Features::TIMESTAMP_QUERY &
                     // wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES,
                     limits,
                 },
                 None,
-            ).await.unwrap();
+            )
+            .await
+            .unwrap();
         (device, queue)
     }
 
@@ -159,44 +167,51 @@ impl GPUExecutor {
 
             // We also prepare staging buffers and ask them to retrieve data from storage buffer.
             let staging_buf = match var.dtype {
-                TensorDataType::F32 => { create_staging_buf::<f32>(device, id.to_string().as_str(), &None, &var.shape) }
-                TensorDataType::I32 => { create_staging_buf::<i32>(device, id.to_string().as_str(), &None, &var.shape) }
+                TensorDataType::F32 => {
+                    create_staging_buf::<f32>(device, id.to_string().as_str(), &None, &var.shape)
+                }
+                TensorDataType::I32 => {
+                    create_staging_buf::<i32>(device, id.to_string().as_str(), &None, &var.shape)
+                }
             };
             self.staging_buf.borrow_mut().insert(*id, staging_buf);
 
             if var.requires_grad {
                 let grad_staging_buf = match var.dtype {
-                    TensorDataType::F32 => { create_staging_buf::<f32>(device, id.to_string().as_str(), &None, &var.shape) }
-                    TensorDataType::I32 => { create_staging_buf::<i32>(device, id.to_string().as_str(), &None, &var.shape) }
+                    TensorDataType::F32 => create_staging_buf::<f32>(
+                        device,
+                        id.to_string().as_str(),
+                        &None,
+                        &var.shape,
+                    ),
+                    TensorDataType::I32 => create_staging_buf::<i32>(
+                        device,
+                        id.to_string().as_str(),
+                        &None,
+                        &var.shape,
+                    ),
                 };
-                self.grad_staging_buf.borrow_mut().insert(*id, grad_staging_buf);
+                self.grad_staging_buf
+                    .borrow_mut()
+                    .insert(*id, grad_staging_buf);
             }
         }
     }
 
-    async fn backward_inner(&self, var: &Variable, device: &wgpu::Device, queue: &wgpu::Queue, session: &Session) {
+    async fn backward_inner(
+        &self,
+        var: &Variable,
+        _device: &wgpu::Device,
+        _: &wgpu::Queue,
+        session: &Session,
+    ) {
         let tensors = self.tensors.borrow_mut();
 
         // let sorted_back_ids: Vec<Uuid> = session.sorted_ids().into_iter().rev().collect();
 
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-
-
         let id = var.id;
         // for id in &sorted_back_ids {
         let var = &session.variables.borrow()[&id];
-
-        let input_tensors: Vec<&wgpu::Buffer> = var.prevs.iter().map(|id| &tensors[&id].data.buffer).collect();
-        let grad_tensors: Vec<Option<&wgpu::Buffer>> = var.prevs.iter().map(|id| match &tensors[&id].grad {
-            None => { None }
-            Some(t) => { Some(&t.buffer) }
-        }).collect();
-        let current_tensor = &tensors[&var.id].data.buffer;
-        let current_grad = match &tensors[&var.id].grad {
-            None => { None }
-            Some(t) => { Some(&t.buffer) }
-        };
-
 
         let op_str = var.var_type.op_str();
         let templ_str = PROJECT_DIR
@@ -210,15 +225,16 @@ impl GPUExecutor {
 
         let mut params = tera::Context::new();
         // Ask current tensor to setup shader template parameters
-        tensors[&id].executable_op.setup_shader_backward(var.id, session, &mut params);
-        let shader_src = templ.render(op_str, &params).unwrap();
-        println!("{}", shader_src)
-        // }
+        tensors[&id]
+            .executable_op
+            .setup_shader_backward(var.id, session, &mut params);
+        let _ = templ.render(op_str, &params).unwrap();
     }
 
     async fn execute_inner(&self, device: &wgpu::Device, queue: &wgpu::Queue, session: &Session) {
         let sorted_ids = session.sorted_ids();
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
         let tensors = self.tensors.borrow_mut();
 
@@ -263,22 +279,23 @@ impl GPUExecutor {
             let mut params = tera::Context::new();
 
             // Ask current tensor to setup shader template parameters
-            current_tensor.executable_op.setup_shader_forward(var.id, session, &mut params);
+            current_tensor
+                .executable_op
+                .setup_shader_forward(var.id, session, &mut params);
 
             let shader_src = templ.render(op_str, &params).unwrap();
 
-            let shader_module = device.create_shader_module(
-                wgpu::ShaderModuleDescriptor {
-                    label: Some(format!("{}_shader", op_str).as_str()),
-                    source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(&shader_src)),
-                }
-            );
-            let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: None,
-                layout: None,
-                module: &shader_module,
-                entry_point: "main",
+            let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some(format!("{}_shader", op_str).as_str()),
+                source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(&shader_src)),
             });
+            let compute_pipeline =
+                device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: None,
+                    layout: None,
+                    module: &shader_module,
+                    entry_point: "main",
+                });
             let bind_group_layout = compute_pipeline.get_bind_group_layout(0);
             let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: None,
@@ -299,8 +316,6 @@ impl GPUExecutor {
                 cpass.dispatch_workgroups(x, y, z);
             }
         }
-
-        let terminal_node_ids = session.terminal_ids();
 
         // copy buf of terminal variables to staging buffers
         for id in &sorted_ids {
@@ -337,8 +352,12 @@ mod test {
     #[test]
     fn add() {
         let mut sess = Session::new();
-        let a = sess.init_tensor_var(TensorData::F32(vec![1., 2., 3.]), vec![3]).unwrap();
-        let b = sess.init_tensor_var(TensorData::F32(vec![1., 2., 3.]), vec![3]).unwrap();
+        let a = sess
+            .init_tensor_var(TensorData::F32(vec![1., 2., 3.]), vec![3])
+            .unwrap();
+        let b = sess
+            .init_tensor_var(TensorData::F32(vec![1., 2., 3.]), vec![3])
+            .unwrap();
         let c = a.add(&b);
         let mut executor = GPUExecutor::new();
 
@@ -353,12 +372,20 @@ mod test {
     #[test]
     fn matmul() {
         let mut sess = Session::new();
-        let a = sess.init_tensor_var(TensorData::F32(vec![1.0; 100000]), vec![1000, 100]).unwrap();
-        let b = sess.init_tensor_var(TensorData::F32(vec![1.0; 100000]), vec![100, 1000]).unwrap();
+        let a = sess
+            .init_tensor_var(TensorData::F32(vec![1.0; 100000]), vec![1000, 100])
+            .unwrap();
+        let b = sess
+            .init_tensor_var(TensorData::F32(vec![1.0; 100000]), vec![100, 1000])
+            .unwrap();
         let c = a.matmul(&b);
 
-        let x = sess.init_tensor_var(TensorData::F32(vec![1., 2., 3., 4.]), vec![2, 2]).unwrap();
-        let y = sess.init_tensor_var(TensorData::F32(vec![2., 2., 2., 2.]), vec![2, 2]).unwrap();
+        let x = sess
+            .init_tensor_var(TensorData::F32(vec![1., 2., 3., 4.]), vec![2, 2])
+            .unwrap();
+        let y = sess
+            .init_tensor_var(TensorData::F32(vec![2., 2., 2., 2.]), vec![2, 2])
+            .unwrap();
         let z = x.matmul(&y);
         let mut executor = GPUExecutor::new();
 

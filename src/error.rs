@@ -5,8 +5,8 @@ pub enum TensoriaError {
     CannotReshapeError,
     AccessingMismatchedType,
     DeviceNotCreated,
+    BackwardOnTensorWithNoGrad,
 }
-
 
 impl Display for TensoriaError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -15,4 +15,3 @@ impl Display for TensoriaError {
 }
 
 impl std::error::Error for TensoriaError {}
-
