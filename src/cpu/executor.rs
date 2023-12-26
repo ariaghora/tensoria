@@ -196,6 +196,16 @@ type CalcGradFn = fn(
 ) -> Option<ArrayD<f32>>;
 
 impl CPUExecutor {
+    pub fn new() -> Self {
+        Self {
+            tensors: Default::default(),
+        }
+    }
+
+    pub fn fetch(&self, var: &Arc<Variable>) -> Option<&CPUTensor> {
+        self.tensors.get(&var.id)
+    }
+
     fn binop_backward(
         &mut self,
         var: &Arc<Variable>,

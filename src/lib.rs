@@ -4,6 +4,7 @@ pub mod session;
 pub mod traits;
 pub mod var;
 pub mod wgpu;
+pub mod nn;
 
 #[cfg(test)]
 mod tests {
