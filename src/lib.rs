@@ -5,6 +5,7 @@ pub mod traits;
 pub mod var;
 pub mod wgpu;
 pub mod nn;
+pub mod functions;
 
 #[cfg(test)]
 mod tests {

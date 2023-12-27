@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::error::Error;
-use std::ops::{Add, Mul};
+use std::ops::{Add, Mul, Sub};
 use std::sync::Arc;
 
 use ndarray::{ArrayD, Axis, Ix2};
@@ -97,7 +97,8 @@ impl CPUTensor {
 }
 
 pub struct CPUExecutor {
-    tensors: HashMap<Uuid, CPUTensor>,
+    pub tensors: HashMap<Uuid, CPUTensor>,
+    executed: bool,
 }
 
 impl Executor for CPUExecutor {
@@ -163,6 +164,11 @@ impl Executor for CPUExecutor {
                     |l_g, out_g, _, _| Some(l_g.add(out_g)),
                     |r_g, out_g, _, _| Some(r_g.add(out_g)),
                 ),
+                VarType::Sub => self.binop_backward(
+                    var,
+                    |l_g, out_g, _, _| Some(l_g.add(out_g)),
+                    |r_g, out_g, _, _| Some(r_g.sub(out_g)),
+                ),
                 VarType::MatMul => self.binop_backward(
                     var,
                     |l_g, out_g, _, r_val| {
@@ -184,6 +190,20 @@ impl Executor for CPUExecutor {
                 _ => todo!(),
             }
         }
+
+        // ensure that intermediary variables are already cleared
+        // Remove intermediary CPU tensor from previous iterations
+        for id in &session.intermediary_ids() {
+            self.tensors.remove(&id);
+        }
+
+        for id in &session.intermediary_ids() {
+            session.variables.borrow_mut().remove(&id);
+        }
+        for (k, v) in session.variables.borrow_mut().iter() {
+            v.nexts.borrow_mut().clear();
+        }
+        println!("{:?}", &session.variables.borrow().keys());
         Ok(())
     }
 }
@@ -199,6 +219,7 @@ impl CPUExecutor {
     pub fn new() -> Self {
         Self {
             tensors: Default::default(),
+            executed: false,
         }
     }
 
@@ -280,8 +301,6 @@ impl CPUExecutor {
 
 #[cfg(test)]
 mod test {
-    use std::collections::HashMap;
-
     use crate::cpu::executor::CPUExecutor;
     use crate::session::Session;
     use crate::traits::Executor;
@@ -301,9 +320,7 @@ mod test {
         let res_sub = a.sub(&b);
         let res_mul = a.mul(&b);
 
-        let mut executor = CPUExecutor {
-            tensors: HashMap::new(),
-        };
+        let mut executor = CPUExecutor::new();
         executor.forward(&sess).unwrap();
         let res_cpu_add = executor.tensors.get(&res_add.id).unwrap();
         let res_cpu_sub = executor.tensors.get(&res_sub.id).unwrap();
@@ -327,9 +344,7 @@ mod test {
             .unwrap();
         let c = a.add(&b);
 
-        let mut executor = CPUExecutor {
-            tensors: HashMap::new(),
-        };
+        let mut executor = CPUExecutor::new();
         executor.forward(&sess).unwrap();
         executor.backward(&c, &sess).unwrap();
         if let Some(b_grad) = executor.tensors.get(&b.id).unwrap().grad.as_ref() {
@@ -350,9 +365,7 @@ mod test {
             .unwrap();
         let b = a.add(&a).add(&a);
 
-        let mut executor = CPUExecutor {
-            tensors: HashMap::new(),
-        };
+        let mut executor = CPUExecutor::new();
         executor.forward(&sess).unwrap();
         executor.backward(&b, &sess).unwrap();
         if let Some(a_grad) = executor.tensors.get(&a.id).unwrap().grad.as_ref() {
@@ -373,9 +386,7 @@ mod test {
             .unwrap();
         let b = a.add(&a).add(&a);
 
-        let mut executor = CPUExecutor {
-            tensors: HashMap::new(),
-        };
+        let mut executor = CPUExecutor::new();
         executor.forward(&sess).unwrap();
         let res_cpu = executor.tensors.get(&b.id).unwrap();
         assert_eq!(res_cpu.data.as_slice().unwrap(), vec![3.0, 6.0]);
@@ -389,9 +400,7 @@ mod test {
             .unwrap();
         let b = a.mul(&a);
 
-        let mut executor = CPUExecutor {
-            tensors: HashMap::new(),
-        };
+        let mut executor = CPUExecutor::new();
         executor.forward(&sess).unwrap();
         executor.backward(&b, &sess).unwrap();
 
@@ -413,9 +422,7 @@ mod test {
             .unwrap();
         let c = a.matmul(&b);
 
-        let mut executor = CPUExecutor {
-            tensors: HashMap::new(),
-        };
+        let mut executor = CPUExecutor::new();
 
         executor.forward(&sess).unwrap();
         executor.backward(&c, &sess).unwrap();

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::error::TensoriaError;
-use crate::var::{TensorData, VarType, Variable};
+use crate::var::{TensorData, Variable, VarType};
 
 pub struct Session {
     pub(crate) variables: Rc<RefCell<HashMap<Uuid, Arc<Variable>>>>,
@@ -112,6 +112,15 @@ impl Session {
             .map(|(_, v)| v.id)
             .collect();
         terminal_node_ids
+    }
+
+    pub fn intermediary_ids(&self) -> Vec<Uuid> {
+        self.variables
+            .borrow()
+            .iter()
+            .filter(|(k, v)| v.prevs.len() > 0)
+            .map(|(k, v)| *k)
+            .collect()
     }
 }
 
