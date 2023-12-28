@@ -12,6 +12,7 @@ pub enum VarType {
     Leaf,
     MatMul,
     Mul,
+    Mean,
 }
 
 #[derive(Debug, Clone)]
@@ -51,8 +52,8 @@ impl TensorData {
     }
 
     pub fn get_data_f32<'a, 'b>(&'a self) -> &'b Vec<f32>
-    where
-        'a: 'b,
+        where
+            'a: 'b,
     {
         if let TensorData::F32(val) = self {
             return val;
@@ -60,8 +61,8 @@ impl TensorData {
         panic!("Attempting to get f32 but the tensor is of different type")
     }
     pub fn get_data_i32<'a, 'b>(&'a self) -> &'b Vec<i32>
-    where
-        'a: 'b,
+        where
+            'a: 'b,
     {
         if let TensorData::I32(val) = self {
             return val;
@@ -123,6 +124,34 @@ impl Variable {
         result_tensor
     }
 
+    fn unary_op(
+        &self,
+        output_dtype: TensorDataType,
+        var_type: VarType,
+        output_shape: Vec<usize>,
+    ) -> Arc<Variable> {
+        let result_tensor = Arc::new(Variable {
+            id: Uuid::new_v4(),
+            tensor_data: None,
+            dtype: output_dtype,
+            shape: output_shape,
+            session: self.session.clone(),
+            prevs: vec![self.id],
+            nexts: Rc::new(RefCell::new(Vec::new())),
+            var_type,
+            requires_grad: self.requires_grad,
+        });
+
+        self.nexts.borrow_mut().push(self.id);
+
+        if let Some(session) = self.session.upgrade() {
+            session
+                .borrow_mut()
+                .insert(result_tensor.id, result_tensor.clone());
+        }
+        result_tensor
+    }
+
     pub fn add(&self, other: &Arc<Variable>) -> Arc<Variable> {
         self.binary_op(other, VarType::Add, self.shape.clone())
     }
@@ -139,6 +168,10 @@ impl Variable {
 
     pub fn mul(&self, other: &Arc<Variable>) -> Arc<Variable> {
         self.binary_op(other, VarType::Mul, self.shape.clone())
+    }
+
+    pub fn mean(&self) -> Arc<Variable> {
+        self.unary_op(self.dtype.clone(), VarType::Mean, vec![1])
     }
 }
 

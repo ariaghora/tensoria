@@ -6,13 +6,13 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use flume::Receiver;
-use include_dir::{include_dir, Dir};
+use include_dir::{Dir, include_dir};
 use uuid::Uuid;
 use wgpu::{BufferAsyncError, Device, Queue};
 
 use crate::session::Session;
 use crate::traits::Executor;
-use crate::var::{TensorData, TensorDataType, VarType, Variable};
+use crate::var::{TensorData, TensorDataType, Variable, VarType};
 use crate::wgpu::tensor::{create_staging_buf, create_storage_buf, GPUTensor, GPUTensorData};
 
 static PROJECT_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/wgpu/wgsl/");
@@ -25,6 +25,7 @@ impl VarType {
             VarType::MatMul => "matmul",
             VarType::Leaf => "leaf",
             VarType::Mul => "mul",
+            VarType::Mean => "mean"
         }
     }
 }
@@ -312,7 +313,6 @@ impl GPUExecutor {
                 cpass.set_bind_group(0, &bind_group, &[]);
 
                 let [x, y, z] = current_tensor.executable_op.workgroups(var.id, &session);
-                println!("{}, {}, {}", x, y, z);
                 cpass.dispatch_workgroups(x, y, z);
             }
         }

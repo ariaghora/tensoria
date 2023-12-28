@@ -1,6 +1,8 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::error::Error;
 use std::ops::{Add, Mul, Sub};
+use std::rc::Rc;
 use std::sync::Arc;
 
 use ndarray::{ArrayD, Axis, Ix2};
@@ -31,7 +33,7 @@ impl TensorProps for CPUTensorData {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CPUTensor {
     pub data: ArrayD<f32>,
     pub grad: Option<ArrayD<f32>>,
@@ -94,10 +96,21 @@ impl CPUTensor {
         let requires_grad = self.requires_grad || other.requires_grad;
         CPUTensor::new(&self.data * &other.data, requires_grad)
     }
+
+    pub fn mean(&self) -> CPUTensor {
+        let mu_val = self.data.mean().unwrap();
+        CPUTensor::new(
+            ArrayD::from_shape_vec(vec![1].as_slice(), vec![mu_val])
+                .unwrap()
+                .into_dyn(),
+            self.requires_grad,
+        )
+    }
 }
 
 pub struct CPUExecutor {
-    pub tensors: HashMap<Uuid, CPUTensor>,
+    pub tensors: Rc<RefCell<HashMap<Uuid, CPUTensor>>>,
+    pub staging_tensors: Rc<RefCell<HashMap<Uuid, CPUTensor>>>,
     executed: bool,
 }
 
@@ -110,33 +123,35 @@ impl Executor for CPUExecutor {
             let var_prevs = var.prevs.clone();
             match var_type {
                 VarType::Leaf => {
-                    if !self.tensors.contains_key(id) {
-                        self.tensors.insert(*id, CPUTensor::from_var(&var));
+                    if !self.tensors.borrow().contains_key(id) {
+                        self.tensors
+                            .borrow_mut()
+                            .insert(*id, CPUTensor::from_var(&var));
                     }
                 }
                 VarType::Add => {
-                    self.tensors.insert(
-                        *id,
-                        self.tensors[&var_prevs[0]].add(&self.tensors[&var_prevs[1]]),
-                    );
+                    let t = self.tensors.borrow()[&var_prevs[0]]
+                        .add(&self.tensors.borrow()[&var_prevs[1]]);
+                    self.tensors.borrow_mut().insert(*id, t);
                 }
                 VarType::Sub => {
-                    self.tensors.insert(
-                        *id,
-                        self.tensors[&var_prevs[0]].sub(&self.tensors[&var_prevs[1]]),
-                    );
+                    let t = self.tensors.borrow()[&var_prevs[0]]
+                        .sub(&self.tensors.borrow()[&var_prevs[1]]);
+                    self.tensors.borrow_mut().insert(*id, t);
                 }
                 VarType::Mul => {
-                    self.tensors.insert(
-                        *id,
-                        self.tensors[&var_prevs[0]].mul(&self.tensors[&var_prevs[1]]),
-                    );
+                    let t = self.tensors.borrow()[&var_prevs[0]]
+                        .mul(&self.tensors.borrow()[&var_prevs[1]]);
+                    self.tensors.borrow_mut().insert(*id, t);
                 }
                 VarType::MatMul => {
-                    self.tensors.insert(
-                        *id,
-                        self.tensors[&var_prevs[0]].matmul(&self.tensors[&var_prevs[1]]),
-                    );
+                    let t = self.tensors.borrow()[&var_prevs[0]]
+                        .matmul(&self.tensors.borrow()[&var_prevs[1]]);
+                    self.tensors.borrow_mut().insert(*id, t);
+                }
+                VarType::Mean => {
+                    let t = self.tensors.borrow()[&var_prevs[0]].mean();
+                    self.tensors.borrow_mut().insert(*id, t);
                 }
             };
         }
@@ -149,7 +164,7 @@ impl Executor for CPUExecutor {
             return Err(Box::new(error::TensoriaError::BackwardOnTensorWithNoGrad));
         }
 
-        if let Some(grad) = self.tensors.get_mut(&var.id) {
+        if let Some(grad) = self.tensors.borrow_mut().get_mut(&var.id) {
             grad.grad = Some(ArrayD::ones(var.shape.as_slice()));
         }
 
@@ -182,6 +197,11 @@ impl Executor for CPUExecutor {
                         Some(r_g.add(l_val_mat.t().dot(&out_g_mat)))
                     },
                 ),
+                VarType::Mean => self.unop_backward(var, |var_g, out_g, var_val| {
+                    let out_g_mean = (out_g / var_val.len() as f32);
+                    let ones = ArrayD::from_elem(var_val.shape(), 1.0);
+                    Some(var_g.add(out_g_mean.mul(&ones)))
+                }),
                 VarType::Mul => self.binop_backward(
                     var,
                     |l_g, out_g, _, r_val| Some(l_g.add(r_val.mul(out_g))),
@@ -191,59 +211,72 @@ impl Executor for CPUExecutor {
             }
         }
 
-        // ensure that intermediary variables are already cleared
-        // Remove intermediary CPU tensor from previous iterations
-        for id in &session.intermediary_ids() {
-            self.tensors.remove(&id);
-        }
+        // Move tensors from the last forward propagation into the staging map, then reset the
+        // main working tensor map
+        self.staging_tensors = self.tensors.clone();
+        self.tensors = Default::default();
 
+        // Clear intermediary variables and reset leaf variables' outgoing edges
         for id in &session.intermediary_ids() {
             session.variables.borrow_mut().remove(&id);
         }
         for (k, v) in session.variables.borrow_mut().iter() {
             v.nexts.borrow_mut().clear();
         }
-        println!("{:?}", &session.variables.borrow().keys());
+
         Ok(())
     }
 }
 
-type CalcGradFn = fn(
+type CalcBinopGradFn = fn(
     old_grad: &ArrayD<f32>,
     out_grad: &ArrayD<f32>,
     left_val: &ArrayD<f32>,
     right_val: &ArrayD<f32>,
 ) -> Option<ArrayD<f32>>;
 
+type CalcUnopGradFn =
+fn(old_grad: &ArrayD<f32>, out_grad: &ArrayD<f32>, val: &ArrayD<f32>) -> Option<ArrayD<f32>>;
+
 impl CPUExecutor {
     pub fn new() -> Self {
         Self {
             tensors: Default::default(),
+            staging_tensors: Default::default(),
             executed: false,
         }
     }
 
-    pub fn fetch(&self, var: &Arc<Variable>) -> Option<&CPUTensor> {
-        self.tensors.get(&var.id)
+    pub fn fetch(&self, var: &Arc<Variable>) -> Option<CPUTensor> {
+        // Try to lookup at the staging map. If not found, then probably it is the first pass without
+        // backward pass being called and try to lookup at main working map. Otherwise, simply return
+        // None.
+        if let Some(val) = self.staging_tensors.borrow().get(&var.id) {
+            return Some(val.clone());
+        } else if let Some(val) = self.tensors.borrow().get(&var.id) {
+            return Some(val.clone());
+        } else {
+            None
+        }
     }
 
     fn binop_backward(
         &mut self,
         var: &Arc<Variable>,
-        calc_left_grad_fn: CalcGradFn,
-        calc_right_grad_fn: CalcGradFn,
+        calc_left_grad_fn: CalcBinopGradFn,
+        calc_right_grad_fn: CalcBinopGradFn,
     ) {
         let var_prevs = var.prevs.clone();
         let id = var.id;
 
         let new_left_grad = match (
-            &self.tensors.get(&var_prevs[0]).unwrap().grad,
-            &self.tensors.get(&id).unwrap().grad,
+            &self.tensors.borrow().get(&var_prevs[0]).unwrap().grad,
+            &self.tensors.borrow().get(&id).unwrap().grad,
         ) {
             (Some(left_grad), Some(out_grad)) => {
                 let mut out_grad = out_grad.clone();
-                let left_val = &self.tensors[&var_prevs[0]].data;
-                let right_val = &self.tensors[&var_prevs[1]].data;
+                let left_val = &self.tensors.borrow()[&var_prevs[0]].data;
+                let right_val = &self.tensors.borrow()[&var_prevs[1]].data;
 
                 // Sum out added dims
                 let ndims_added = out_grad.ndim() - left_val.ndim();
@@ -263,18 +296,18 @@ impl CPUExecutor {
             }
             _ => None,
         };
-        if let Some(left_tensor) = self.tensors.get_mut(&var_prevs[0]) {
+        if let Some(left_tensor) = self.tensors.borrow_mut().get_mut(&var_prevs[0]) {
             left_tensor.grad = new_left_grad;
         }
 
         let new_right_grad = match (
-            &self.tensors.get(&var_prevs[1]).unwrap().grad,
-            &self.tensors.get(&id).unwrap().grad,
+            &self.tensors.borrow().get(&var_prevs[1]).unwrap().grad,
+            &self.tensors.borrow().get(&id).unwrap().grad,
         ) {
             (Some(right_grad), Some(out_grad)) => {
                 let mut out_grad = out_grad.clone();
-                let left_val = &self.tensors[&var_prevs[0]].data;
-                let right_val = &self.tensors[&var_prevs[1]].data;
+                let left_val = &self.tensors.borrow()[&var_prevs[0]].data;
+                let right_val = &self.tensors.borrow()[&var_prevs[1]].data;
 
                 // Sum out added dims
                 let ndims_added = out_grad.ndim() - right_val.ndim();
@@ -293,8 +326,29 @@ impl CPUExecutor {
             }
             _ => None,
         };
-        if let Some(right_tensor) = self.tensors.get_mut(&var_prevs[1]) {
+        if let Some(right_tensor) = self.tensors.borrow_mut().get_mut(&var_prevs[1]) {
             right_tensor.grad = new_right_grad;
+        }
+    }
+
+    fn unop_backward(&mut self, var: &Arc<Variable>, calc_grad_fn: CalcUnopGradFn) {
+        let var_prevs = var.prevs.clone();
+        let id = var.id;
+
+        let new_grad = match (
+            &self.tensors.borrow().get(&var_prevs[0]).unwrap().grad,
+            &self.tensors.borrow().get(&id).unwrap().grad,
+        ) {
+            (Some(old_grad), Some(out_grad)) => {
+                let out_grad = out_grad.clone();
+                let val = &self.tensors.borrow()[&var_prevs[0]].data;
+                let new_grad = calc_grad_fn(old_grad, &out_grad, val);
+                new_grad
+            }
+            _ => None,
+        };
+        if let Some(left_tensor) = self.tensors.borrow_mut().get_mut(&var_prevs[0]) {
+            left_tensor.grad = new_grad;
         }
     }
 }
@@ -322,9 +376,9 @@ mod test {
 
         let mut executor = CPUExecutor::new();
         executor.forward(&sess).unwrap();
-        let res_cpu_add = executor.tensors.get(&res_add.id).unwrap();
-        let res_cpu_sub = executor.tensors.get(&res_sub.id).unwrap();
-        let res_cpu_mul = executor.tensors.get(&res_mul.id).unwrap();
+        let res_cpu_add = executor.fetch(&res_add).unwrap();
+        let res_cpu_sub = executor.fetch(&res_sub).unwrap();
+        let res_cpu_mul = executor.fetch(&res_mul).unwrap();
 
         {
             assert_eq!(res_cpu_add.data.as_slice().unwrap(), vec![4.0, 6.0]);
@@ -347,7 +401,7 @@ mod test {
         let mut executor = CPUExecutor::new();
         executor.forward(&sess).unwrap();
         executor.backward(&c, &sess).unwrap();
-        if let Some(b_grad) = executor.tensors.get(&b.id).unwrap().grad.as_ref() {
+        if let Some(b_grad) = executor.fetch(&b).unwrap().grad.as_ref() {
             assert_eq!(
                 b_grad.as_standard_layout().as_slice().unwrap(),
                 vec![2., 2.]
@@ -368,13 +422,13 @@ mod test {
         let mut executor = CPUExecutor::new();
         executor.forward(&sess).unwrap();
         executor.backward(&b, &sess).unwrap();
-        if let Some(a_grad) = executor.tensors.get(&a.id).unwrap().grad.as_ref() {
+        if let Some(a_grad) = executor.fetch(&a).unwrap().grad.as_ref() {
             assert_eq!(
                 a_grad.as_standard_layout().as_slice().unwrap(),
                 vec![3., 3., 3., 3.]
             );
         } else {
-            panic!("a_grad should not be None")
+            panic!("a_grad should not be None");
         }
     }
 
@@ -388,7 +442,7 @@ mod test {
 
         let mut executor = CPUExecutor::new();
         executor.forward(&sess).unwrap();
-        let res_cpu = executor.tensors.get(&b.id).unwrap();
+        let res_cpu = executor.fetch(&b).unwrap();
         assert_eq!(res_cpu.data.as_slice().unwrap(), vec![3.0, 6.0]);
     }
 
@@ -404,7 +458,7 @@ mod test {
         executor.forward(&sess).unwrap();
         executor.backward(&b, &sess).unwrap();
 
-        if let Some(a_grad) = executor.tensors.get(&a.id).unwrap().grad.as_ref() {
+        if let Some(a_grad) = executor.fetch(&a).unwrap().grad.as_ref() {
             assert_eq!(a_grad.as_slice().unwrap(), vec![2.0, 4.0]);
         } else {
             panic!("a_grad should not be None")
@@ -427,7 +481,7 @@ mod test {
         executor.forward(&sess).unwrap();
         executor.backward(&c, &sess).unwrap();
 
-        if let Some(a_grad) = executor.tensors.get(&a.id).unwrap().grad.as_ref() {
+        if let Some(a_grad) = executor.fetch(&a).unwrap().grad.as_ref() {
             assert_eq!(
                 a_grad.as_standard_layout().as_slice().unwrap(),
                 vec![1., 2., 1., 2.]
@@ -435,7 +489,7 @@ mod test {
         } else {
             panic!("a_grad should not be None")
         }
-        if let Some(b_grad) = executor.tensors.get(&b.id).unwrap().grad.as_ref() {
+        if let Some(b_grad) = executor.fetch(&b).unwrap().grad.as_ref() {
             assert_eq!(
                 b_grad.as_standard_layout().as_slice().unwrap(),
                 vec![4., 6.]

@@ -6,6 +6,7 @@ pub mod var;
 pub mod wgpu;
 pub mod nn;
 pub mod functions;
+pub mod optim;
 
 #[cfg(test)]
 mod tests {

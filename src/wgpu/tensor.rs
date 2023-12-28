@@ -2,11 +2,11 @@ use std::borrow::Cow;
 use std::fmt::Debug;
 use std::sync::Arc;
 
-use wgpu::util::DeviceExt;
 use wgpu::Device;
+use wgpu::util::DeviceExt;
 
 use crate::traits::TensorProps;
-use crate::var::{TensorDataType, VarType, Variable};
+use crate::var::{TensorDataType, Variable, VarType};
 use crate::wgpu::op::add::OpAdd;
 use crate::wgpu::op::leaf::OpLeaf;
 use crate::wgpu::op::matmul::OpMatmul;
@@ -188,5 +188,6 @@ fn var_op_type_to_executable(var_type: &VarType) -> Box<dyn Op> {
         VarType::MatMul => Box::new(OpMatmul {}),
         VarType::Leaf => Box::new(OpLeaf {}),
         VarType::Mul => Box::new(OpMul {}),
+        VarType::Mean => { todo!() }
     }
 }
