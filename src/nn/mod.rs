@@ -10,8 +10,9 @@ pub trait Forward {
 }
 
 pub struct Linear {
-    w: Arc<Variable>,
-    b: Arc<Variable>,
+    pub w: Arc<Variable>,
+    pub b: Arc<Variable>,
+
 }
 
 impl Forward for Linear {

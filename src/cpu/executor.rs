@@ -123,7 +123,9 @@ impl Executor for CPUExecutor {
             let var_prevs = var.prevs.clone();
             match var_type {
                 VarType::Leaf => {
-                    if !self.tensors.borrow().contains_key(id) {
+                    if self.staging_tensors.borrow().contains_key(id) {
+                        self.tensors.borrow_mut().insert(*id, self.staging_tensors.borrow()[id].clone());
+                    } else {
                         self.tensors
                             .borrow_mut()
                             .insert(*id, CPUTensor::from_var(&var));
@@ -238,12 +240,32 @@ type CalcBinopGradFn = fn(
 type CalcUnopGradFn =
 fn(old_grad: &ArrayD<f32>, out_grad: &ArrayD<f32>, val: &ArrayD<f32>) -> Option<ArrayD<f32>>;
 
+type UpdateFn<T> = fn(val: &T, grad: &T) -> T;
+
 impl CPUExecutor {
     pub fn new() -> Self {
         Self {
             tensors: Default::default(),
             staging_tensors: Default::default(),
             executed: false,
+        }
+    }
+
+    pub fn step(&self, var: &Arc<Variable>, update_fn: UpdateFn<ArrayD<f32>>) {
+        let new_val_opt = {
+            let tensors = self.staging_tensors.borrow();
+            let t = tensors.get(&var.id).unwrap();
+            let val = &t.data;
+            if let Some(grad) = &t.grad {
+                let new_val = update_fn(val, grad);
+                Some(new_val)
+            } else { None }
+        };
+
+        let mut tensors_mut = self.staging_tensors.borrow_mut();
+        if let (Some(t), Some(new_val)) = (tensors_mut.get_mut(&var.id), new_val_opt) {
+            t.data = new_val;
+            t.grad = Some(ArrayD::from_elem(var.shape.clone(), 0.0).into());
         }
     }
 
