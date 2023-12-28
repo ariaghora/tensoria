@@ -118,8 +118,8 @@ impl Session {
         self.variables
             .borrow()
             .iter()
-            .filter(|(k, v)| v.prevs.len() > 0)
-            .map(|(k, v)| *k)
+            .filter(|(_, v)| v.prevs.len() > 0)
+            .map(|(k, _)| *k)
             .collect()
     }
 }

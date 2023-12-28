@@ -1,3 +1,3 @@
 use std::ops::{Add, Sub};
 
-pub fn step<V: Add + Sub>(params: Vec<V>, grads: Vec<V>) {}
+pub fn step<V: Add + Sub>(_params: Vec<V>, _grads: Vec<V>) {}

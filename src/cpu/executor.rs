@@ -111,7 +111,6 @@ impl CPUTensor {
 pub struct CPUExecutor {
     pub tensors: Rc<RefCell<HashMap<Uuid, CPUTensor>>>,
     pub staging_tensors: Rc<RefCell<HashMap<Uuid, CPUTensor>>>,
-    executed: bool,
 }
 
 impl Executor for CPUExecutor {
@@ -200,7 +199,7 @@ impl Executor for CPUExecutor {
                     },
                 ),
                 VarType::Mean => self.unop_backward(var, |var_g, out_g, var_val| {
-                    let out_g_mean = (out_g / var_val.len() as f32);
+                    let out_g_mean = out_g / var_val.len() as f32;
                     let ones = ArrayD::from_elem(var_val.shape(), 1.0);
                     Some(var_g.add(out_g_mean.mul(&ones)))
                 }),
@@ -222,7 +221,7 @@ impl Executor for CPUExecutor {
         for id in &session.intermediary_ids() {
             session.variables.borrow_mut().remove(&id);
         }
-        for (k, v) in session.variables.borrow_mut().iter() {
+        for (_, v) in session.variables.borrow_mut().iter() {
             v.nexts.borrow_mut().clear();
         }
 
@@ -247,7 +246,6 @@ impl CPUExecutor {
         Self {
             tensors: Default::default(),
             staging_tensors: Default::default(),
-            executed: false,
         }
     }
 
