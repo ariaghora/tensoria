@@ -7,6 +7,7 @@ pub mod wgpu;
 pub mod nn;
 pub mod functions;
 pub mod optim;
+mod gpu;
 
 #[cfg(test)]
 mod tests {

@@ -3,7 +3,8 @@ name = "tensoria"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[profile.release]
+strip = true
 
 [dependencies]
 uuid = { version = "1.6.1", features = ["v4"] }
@@ -15,3 +16,4 @@ flume = "0.11.0"
 include_dir = "0.7.3"
 tera = "1.19.1"
 rand = "0.8.5"
+lazy_static = "1.4.0"
