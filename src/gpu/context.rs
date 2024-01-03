@@ -1,5 +1,4 @@
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::{Arc, RwLock};
 
 use flume::Receiver;
 use uuid::Uuid;
@@ -7,14 +6,14 @@ use wgpu::BufferAsyncError;
 
 pub struct Context {
     pub(crate) id: Uuid,
-    pub(crate) executor: Rc<RefCell<Executor>>,
+    pub(crate) executor: Arc<RwLock<Executor>>,
 }
 
 impl Context {
     pub fn new() -> Self {
         Self {
             id: Uuid::new_v4(),
-            executor: Rc::new(RefCell::new(Executor::new())),
+            executor: Arc::new(RwLock::new(Executor::new())),
         }
     }
 }
