@@ -22,7 +22,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         sum += input_0[gy * K + k] * input_1[k * N + gx]+
                input_0[gy * K + (k + 1u)] * input_1[(k + 1u) * N + gx] +
                input_0[gy * K + (k + 2u)] * input_1[(k + 2u) * N + gx] +
-               input_0[gy * K + (k + 3u)] * input_1[(k + 3u) * N + gx] ;
+               input_0[gy * K + (k + 3u)] * input_1[(k + 3u) * N + gx];
     }
     output_0[gy * N + gx] = sum;
 }

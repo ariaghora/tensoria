@@ -1,8 +1,6 @@
 use std::sync::{Arc, RwLock};
 
-use flume::Receiver;
 use uuid::Uuid;
-use wgpu::BufferAsyncError;
 
 pub struct Context {
     pub(crate) id: Uuid,
@@ -16,12 +14,6 @@ impl Context {
             executor: Arc::new(RwLock::new(Executor::new())),
         }
     }
-}
-
-pub(crate) struct Buffers {
-    pub(crate) receiver: Option<Receiver<Result<(), BufferAsyncError>>>,
-    pub(crate) storage: wgpu::Buffer,
-    pub(crate) staging: wgpu::Buffer,
 }
 
 pub struct Executor {
@@ -52,7 +44,7 @@ impl Executor {
             .await
             .unwrap();
 
-        let mut limits = wgpu::Limits::downlevel_defaults();
+        let limits = wgpu::Limits::default();
 
         let features = adapter.features();
         let (device, queue) = adapter
