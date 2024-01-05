@@ -48,6 +48,7 @@ pub struct GPUArray {
     pub id: String,
     pub data_type: DataType,
     pub shape: Vec<usize>,
+    pub strides: Vec<usize>,
     initializer: bool,
     context_id: Uuid,
     executor: Arc<RwLock<Executor>>,
@@ -69,6 +70,56 @@ impl Drop for GPUArray {
             self.executor.write().unwrap().sync();
         }
     }
+}
+
+fn shape_to_strides(shape: &Vec<usize>) -> Vec<usize> {
+    let mut strides = Vec::with_capacity(shape.len());
+    let mut stride = 1;
+    for &dim in shape.iter().rev() {
+        strides.push(stride);
+        stride *= dim;
+    }
+    strides.reverse();
+    strides
+}
+
+pub fn compute_broadcasted_shape_and_strides(
+    shape1: &Vec<usize>,
+    shape2: &Vec<usize>,
+    strides1: &Vec<usize>,
+    strides2: &Vec<usize>,
+) -> (Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>) {
+    let length = shape1.len().max(shape2.len());
+    let mut adjusted_shape1 = vec![1; length];
+    let mut adjusted_shape2 = vec![1; length];
+    let mut adjusted_strides1 = vec![0; length];
+    let mut adjusted_strides2 = vec![0; length];
+
+    for (i, &dim) in shape1.iter().rev().enumerate() {
+        adjusted_shape1[length - 1 - i] = dim;
+        adjusted_strides1[length - 1 - i] = if dim == 1 { 0 } else { strides1[shape1.len() - 1 - i] };
+    }
+
+    for (i, &dim) in shape2.iter().rev().enumerate() {
+        adjusted_shape2[length - 1 - i] = dim;
+        adjusted_strides2[length - 1 - i] = if dim == 1 { 0 } else { strides2[shape2.len() - 1 - i] };
+    }
+
+    for i in 0..length {
+        if adjusted_shape1[i] != adjusted_shape2[i] {
+            if adjusted_shape1[i] == 1 {
+                adjusted_shape1[i] = adjusted_shape2[i];
+                adjusted_strides1[i] = 0;
+            } else if adjusted_shape2[i] == 1 {
+                adjusted_shape2[i] = adjusted_shape1[i];
+                adjusted_strides2[i] = 0;
+            } else {
+                panic!("Shapes are not broadcastable");
+            }
+        }
+    }
+
+    (adjusted_shape1, adjusted_shape2, adjusted_strides1, adjusted_strides2)
 }
 
 impl GPUArray {
@@ -105,6 +156,7 @@ impl GPUArray {
             context_id: context.id,
             data_type: data.dtype(),
             shape: shape.clone(),
+            strides: shape_to_strides(&shape),
             executor: context.executor.clone(),
             main_buffer: storage_buf,
             staging_buffer: staging_buf,
@@ -127,29 +179,33 @@ impl GPUArray {
         let res_id = Uuid::new_v4().to_string();
         self.executor.write().unwrap().synced = false;
 
+        let (res_shape, _, _, _) = compute_broadcasted_shape_and_strides(&self.shape, &other.shape, &self.strides, &other.strides);
+        let res_strides = shape_to_strides(&res_shape);
         let (res_storage_buf, staging_buf) = match &self.data_type {
             DataType::F32 => {
                 let storage_buf = create_storage_buf::<f32>(
                     &self.executor.read().unwrap().device,
                     &res_id,
                     None,
-                    &self.shape,
+                    &res_shape,
                 );
                 let staging_buf = create_staging_buf::<f32>(
                     &self.executor.read().unwrap().device,
                     &res_id,
                     &None,
-                    &self.shape,
+                    &res_shape,
                 );
                 (storage_buf, staging_buf)
             }
         };
+
         let res_gpu = Self {
             id: res_id.clone(),
             initializer: false,
             context_id: self.context_id,
             data_type: self.data_type.clone(),
-            shape: self.shape.clone(),
+            shape: res_shape,
+            strides: res_strides,
             executor: Arc::clone(&self.executor),
             main_buffer: res_storage_buf,
             staging_buffer: staging_buf,
@@ -311,8 +367,8 @@ mod test {
 
     #[test]
     fn test_simple_add() {
-        let x = GPUArray::new(ArrayData::F32(vec![1., 2., 3.]), vec![3]);
-        let y = GPUArray::new(ArrayData::F32(vec![2., 3., 4.]), vec![3]);
+        let x = GPUArray::new(ArrayData::F32(vec![1., 2., 3.]), vec![1, 3]);
+        let y = GPUArray::new(ArrayData::F32(vec![2., 3., 4.]), vec![1, 3]);
         let res = x.add(&y);
 
         if let ArrayData::F32(val) = x.data() {
@@ -323,6 +379,39 @@ mod test {
 
         if let ArrayData::F32(val) = res.data() {
             assert_eq!(val, vec![3., 5., 7.])
+        } else {
+            panic!("Should be F32")
+        }
+    }
+
+    #[test]
+    fn test_add_bcast() {
+        let x = GPUArray::new(ArrayData::F32(vec![1., 2., 3., 4.]), vec![2, 2]);
+        let y = GPUArray::new(ArrayData::F32(vec![10., 10.]), vec![2]);
+        let res = x.add(&y);
+        if let ArrayData::F32(val) = res.data() {
+            assert_eq!(val, vec![11., 12., 13., 14.])
+        } else {
+            panic!("Should be F32")
+        }
+
+        let x = GPUArray::new(ArrayData::F32(vec![1., 2., 3., 4.]), vec![2, 2]);
+        let y = GPUArray::new(ArrayData::F32(vec![10., 10.]), vec![2, 1]);
+        let res = x.add(&y);
+        if let ArrayData::F32(val) = res.data() {
+            assert_eq!(val, vec![11., 12., 13., 14.])
+        } else {
+            panic!("Should be F32")
+        }
+    }
+
+    #[test]
+    fn test_add_bcast_bidirection() {
+        let x = GPUArray::new(ArrayData::F32(vec![1., 2., 3.]), vec![3]);
+        let y = GPUArray::new(ArrayData::F32(vec![1., 2., 3.]), vec![3, 1]);
+        let res = x.add(&y);
+        if let ArrayData::F32(val) = res.data() {
+            assert_eq!(val, vec![2.0, 3.0, 4.0, 3.0, 4.0, 5.0, 4.0, 5.0, 6.0])
         } else {
             panic!("Should be F32")
         }
