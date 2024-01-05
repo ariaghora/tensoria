@@ -7,9 +7,9 @@
 A tensor manipulation library running on GPU, self-contained, in pure rust
 </p>
 
-<p align="center">
-    <img src="assets/img.png" width="150"/>
-</p>
+<h3 align="center">
+    ᕕ(⌐■_■)ᕗ ♪♬
+</h3>
 
 ## Example
 
