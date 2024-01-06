@@ -150,6 +150,16 @@ mod test {
         let y = Tensor::new([1, 2], vec![3., 4.])?.to_gpu()?;
         let res = &x + &y;
         assert_eq!(res.data(), vec![4., 6.]);
+
+        let x = Tensor::new([2], vec![1., 2.])?;
+        let y = Tensor::new([2, 1], vec![1., 2.])?;
+        let res_cpu = (&x + &y).data();
+
+        let x = Tensor::new([2], vec![1., 2.])?.to_gpu()?;
+        let y = Tensor::new([2, 1], vec![1., 2.])?.to_gpu()?;
+        let res_gpu = (&x + &y).data();
+        assert_eq!(res_cpu, res_gpu);
+
         Ok(())
     }
 }
