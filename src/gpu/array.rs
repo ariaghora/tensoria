@@ -21,6 +21,7 @@ lazy_static! {
 #[derive(Clone)]
 pub enum GPUDataType {
     F32,
+    I32,
 }
 
 pub trait GetType {
@@ -33,11 +34,18 @@ impl GetType for Vec<f32> {
     }
 }
 
+impl GetType for Vec<i32> {
+    fn get_type(&self) -> GPUDataType {
+        GPUDataType::I32
+    }
+}
+
 
 impl GPUDataType {
     pub fn wgsl_type(&self) -> String {
         let dtype = match self {
             GPUDataType::F32 => "f32",
+            GPUDataType::I32 => "i32",
         };
         dtype.into()
     }
@@ -180,18 +188,13 @@ impl<T: Clone + Pod + Default + Debug> GPUArray<T> where Vec<T>: GetType {
         let res_strides = shape_to_strides(&res_shape);
         let (res_storage_buf, staging_buf) = match &self.data_type {
             GPUDataType::F32 => {
-                let storage_buf = create_storage_buf::<f32>(
-                    &self.executor.read().unwrap().device,
-                    &res_id,
-                    None,
-                    &res_shape,
-                );
-                let staging_buf = create_staging_buf::<f32>(
-                    &self.executor.read().unwrap().device,
-                    &res_id,
-                    &None,
-                    &res_shape,
-                );
+                let storage_buf = create_storage_buf::<f32>(&self.executor.read().unwrap().device, &res_id, None, &res_shape);
+                let staging_buf = create_staging_buf::<f32>(&self.executor.read().unwrap().device, &res_id, &None, &res_shape);
+                (storage_buf, staging_buf)
+            }
+            GPUDataType::I32 => {
+                let storage_buf = create_storage_buf::<i32>(&self.executor.read().unwrap().device, &res_id, None, &res_shape);
+                let staging_buf = create_staging_buf::<i32>(&self.executor.read().unwrap().device, &res_id, &None, &res_shape);
                 (storage_buf, staging_buf)
             }
         };
