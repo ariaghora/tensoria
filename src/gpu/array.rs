@@ -364,11 +364,13 @@ impl GPUArray {
 #[allow(unreachable_code)]
 mod test {
     use crate::gpu::array::{ArrayData, GPUArray};
+    use crate::gpu::context::Context;
 
     #[test]
     fn test_simple_add() {
-        let x = GPUArray::new(ArrayData::F32(vec![1., 2., 3.]), vec![1, 3]);
-        let y = GPUArray::new(ArrayData::F32(vec![2., 3., 4.]), vec![1, 3]);
+        let ctx = Context::new();
+        let x = GPUArray::new_with_ctx(&ctx, ArrayData::F32(vec![1., 2., 3.]), vec![1, 3]);
+        let y = GPUArray::new_with_ctx(&ctx, ArrayData::F32(vec![2., 3., 4.]), vec![1, 3]);
         let res = x.add(&y);
 
         if let ArrayData::F32(val) = x.data() {
@@ -386,8 +388,9 @@ mod test {
 
     #[test]
     fn test_add_bcast() {
-        let x = GPUArray::new(ArrayData::F32(vec![1., 2., 3., 4.]), vec![2, 2]);
-        let y = GPUArray::new(ArrayData::F32(vec![10., 10.]), vec![2]);
+        let ctx = Context::new();
+        let x = GPUArray::new_with_ctx(&ctx, ArrayData::F32(vec![1., 2., 3., 4.]), vec![2, 2]);
+        let y = GPUArray::new_with_ctx(&ctx, ArrayData::F32(vec![10., 10.]), vec![2]);
         let res = x.add(&y);
         if let ArrayData::F32(val) = res.data() {
             assert_eq!(val, vec![11., 12., 13., 14.])
@@ -407,8 +410,9 @@ mod test {
 
     #[test]
     fn test_add_bcast_bidirection() {
-        let x = GPUArray::new(ArrayData::F32(vec![1., 2., 3.]), vec![3]);
-        let y = GPUArray::new(ArrayData::F32(vec![1., 2., 3.]), vec![3, 1]);
+        let ctx = Context::new();
+        let x = GPUArray::new_with_ctx(&ctx, ArrayData::F32(vec![1., 2., 3.]), vec![3]);
+        let y = GPUArray::new_with_ctx(&ctx, ArrayData::F32(vec![1., 2., 3.]), vec![3, 1]);
         let res = x.add(&y);
         if let ArrayData::F32(val) = res.data() {
             assert_eq!(val, vec![2.0, 3.0, 4.0, 3.0, 4.0, 5.0, 4.0, 5.0, 6.0])
