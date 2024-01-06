@@ -2,12 +2,12 @@ use std::sync::{Arc, RwLock};
 
 use uuid::Uuid;
 
-pub struct Context {
+pub struct GPUContext {
     pub(crate) id: Uuid,
     pub(crate) executor: Arc<RwLock<Executor>>,
 }
 
-impl Context {
+impl GPUContext {
     pub fn new() -> Self {
         Self {
             id: Uuid::new_v4(),

@@ -7,14 +7,14 @@ use lazy_static::lazy_static;
 use uuid::Uuid;
 use wgpu::BindGroupEntry;
 
-use crate::gpu::context::{Context, Executor};
+use crate::gpu::context::{Executor, GPUContext};
 use crate::gpu::op_type::{Add, MatMul, Shader};
 use crate::wgpu::tensor::{create_staging_buf, create_storage_buf};
 
 static PROJECT_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/gpu/wgsl/");
 
 lazy_static! {
-    static ref GLOBAL_CTX: Context = Context::new();
+    static ref GLOBAL_CTX: GPUContext = GPUContext::new();
 }
 
 #[derive(Clone)]
@@ -127,11 +127,11 @@ impl GPUArray {
         Self::new_with_ctx(&GLOBAL_CTX, data, shape)
     }
 
-    fn new_with_ctx(context: &Context, data: ArrayData, shape: Vec<usize>) -> Self {
+    fn new_with_ctx(context: &GPUContext, data: ArrayData, shape: Vec<usize>) -> Self {
         Self::new_with_name(context, Uuid::new_v4().to_string().as_str(), data, shape)
     }
 
-    fn new_with_name(context: &Context, id: &str, data: ArrayData, shape: Vec<usize>) -> Self {
+    fn new_with_name(context: &GPUContext, id: &str, data: ArrayData, shape: Vec<usize>) -> Self {
         let (storage_buf, staging_buf) = match &data {
             ArrayData::F32(vals) => {
                 let storage_buf = create_storage_buf::<f32>(
@@ -364,11 +364,11 @@ impl GPUArray {
 #[allow(unreachable_code)]
 mod test {
     use crate::gpu::array::{ArrayData, GPUArray};
-    use crate::gpu::context::Context;
+    use crate::gpu::context::GPUContext;
 
     #[test]
     fn test_simple_add() {
-        let ctx = Context::new();
+        let ctx = GPUContext::new();
         let x = GPUArray::new_with_ctx(&ctx, ArrayData::F32(vec![1., 2., 3.]), vec![1, 3]);
         let y = GPUArray::new_with_ctx(&ctx, ArrayData::F32(vec![2., 3., 4.]), vec![1, 3]);
         let res = x.add(&y);
@@ -388,7 +388,7 @@ mod test {
 
     #[test]
     fn test_add_bcast() {
-        let ctx = Context::new();
+        let ctx = GPUContext::new();
         let x = GPUArray::new_with_ctx(&ctx, ArrayData::F32(vec![1., 2., 3., 4.]), vec![2, 2]);
         let y = GPUArray::new_with_ctx(&ctx, ArrayData::F32(vec![10., 10.]), vec![2]);
         let res = x.add(&y);
@@ -410,7 +410,7 @@ mod test {
 
     #[test]
     fn test_add_bcast_bidirection() {
-        let ctx = Context::new();
+        let ctx = GPUContext::new();
         let x = GPUArray::new_with_ctx(&ctx, ArrayData::F32(vec![1., 2., 3.]), vec![3]);
         let y = GPUArray::new_with_ctx(&ctx, ArrayData::F32(vec![1., 2., 3.]), vec![3, 1]);
         let res = x.add(&y);
