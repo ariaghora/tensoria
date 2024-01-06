@@ -23,7 +23,7 @@ pub enum GPUDataType {
     F32,
 }
 
-trait GetType {
+pub trait GetType {
     fn get_type(&self) -> GPUDataType;
 }
 
