@@ -4,10 +4,10 @@ use crate::gpu::array::{compute_broadcasted_shape_and_strides, GPUArray};
 
 pub trait Shader {
     fn shader_path(&self) -> String;
-    fn prepare(
+    fn prepare<T>(
         &self,
-        operands: Vec<&GPUArray>,
-        output: &GPUArray,
+        operands: Vec<&GPUArray<T>>,
+        output: &GPUArray<T>,
         params: &mut Context,
     ) -> (u32, u32, u32);
 }
@@ -23,7 +23,7 @@ fn shape_to_csv(shape: &Vec<usize>) -> String {
 
 pub struct Add {}
 
-fn generate_idx_code(idx_var_name: &str, shape: &Vec<usize>, adjusted_strides: &Vec<usize>, actual_strides: &Vec<usize>) -> String {
+fn generate_idx_code(idx_var_name: &str, shape: &Vec<usize>, adjusted_strides: &Vec<usize>) -> String {
     let mut code = String::new();
     let mut terms = Vec::new();
     for i in 0..shape.len() {
@@ -45,10 +45,10 @@ impl Shader for Add {
         "add.wgsl".into()
     }
 
-    fn prepare(
+    fn prepare<T>(
         &self,
-        operands: Vec<&GPUArray>,
-        output: &GPUArray,
+        operands: Vec<&GPUArray<T>>,
+        output: &GPUArray<T>,
         params: &mut Context,
     ) -> (u32, u32, u32) {
         params.insert("input_0_type", &operands[0].data_type.wgsl_type());
@@ -67,12 +67,12 @@ impl Shader for Add {
         let left_broadcast = shape0 != &adj_shape0;
         let right_broadcast = shape1 != &adj_shape1;
         if left_broadcast {
-            let idx0_code = generate_idx_code("idx0", &adj_shape0, &adj_strides0, &operands[0].strides);
+            let idx0_code = generate_idx_code("idx0", &adj_shape0, &adj_strides0);
             params.insert("left_broadcast", &true);
             params.insert("idx0_code", &idx0_code);
         }
         if right_broadcast {
-            let idx1_code = generate_idx_code("idx1", &adj_shape1, &adj_strides1, &operands[1].strides);
+            let idx1_code = generate_idx_code("idx1", &adj_shape1, &adj_strides1);
             params.insert("right_broadcast", &true);
             params.insert("idx1_code", &idx1_code);
         }
@@ -102,10 +102,10 @@ impl Shader for MatMul {
         "matmul.wgsl".into()
     }
 
-    fn prepare(
+    fn prepare<T>(
         &self,
-        operands: Vec<&GPUArray>,
-        output: &GPUArray,
+        operands: Vec<&GPUArray<T>>,
+        output: &GPUArray<T>,
         params: &mut Context,
     ) -> (u32, u32, u32) {
         let out_shape = &output.shape;

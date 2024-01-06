@@ -2,6 +2,7 @@ use std::borrow::Cow;
 use std::fmt::{Debug, Formatter};
 use std::sync::{Arc, RwLock};
 
+use bytemuck::Pod;
 use include_dir::{Dir, include_dir};
 use lazy_static::lazy_static;
 use uuid::Uuid;
@@ -18,37 +19,36 @@ lazy_static! {
 }
 
 #[derive(Clone)]
-pub enum ArrayData {
-    F32(Vec<f32>),
-}
-
-impl ArrayData {
-    fn dtype(&self) -> DataType {
-        match self {
-            ArrayData::F32(_) => DataType::F32,
-        }
-    }
-}
-
-#[derive(Clone)]
-pub enum DataType {
+pub enum GPUDataType {
     F32,
 }
 
-impl DataType {
-    pub fn wgsl_type(&self) -> String {
-        match self {
-            DataType::F32 => "f32",
-        }
-            .into()
+trait GetType {
+    fn get_type(&self) -> GPUDataType;
+}
+
+impl GetType for Vec<f32> {
+    fn get_type(&self) -> GPUDataType {
+        GPUDataType::F32
     }
 }
 
-pub struct GPUArray {
+
+impl GPUDataType {
+    pub fn wgsl_type(&self) -> String {
+        let dtype = match self {
+            GPUDataType::F32 => "f32",
+        };
+        dtype.into()
+    }
+}
+
+pub struct GPUArray<T> {
     pub id: String,
-    pub data_type: DataType,
+    pub data_type: GPUDataType,
     pub shape: Vec<usize>,
     pub strides: Vec<usize>,
+    init_data: Option<Vec<T>>,
     initializer: bool,
     context_id: Uuid,
     executor: Arc<RwLock<Executor>>,
@@ -56,13 +56,13 @@ pub struct GPUArray {
     staging_buffer: wgpu::Buffer,
 }
 
-impl Debug for GPUArray {
+impl<T> Debug for GPUArray<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "GPUArray(id={})", self.id)
     }
 }
 
-impl Drop for GPUArray {
+impl<T> Drop for GPUArray<T> {
     fn drop(&mut self) {
         // we shall sync upon drop
         let synced = self.executor.read().unwrap().synced;
@@ -122,39 +122,36 @@ pub fn compute_broadcasted_shape_and_strides(
     (adjusted_shape1, adjusted_shape2, adjusted_strides1, adjusted_strides2)
 }
 
-impl GPUArray {
-    fn new(data: ArrayData, shape: Vec<usize>) -> Self {
+impl<T: Clone + Pod + Default + Debug> GPUArray<T> where Vec<T>: GetType {
+    fn new(data: Vec<T>, shape: Vec<usize>) -> Self {
         Self::new_with_ctx(&GLOBAL_CTX, data, shape)
     }
 
-    fn new_with_ctx(context: &GPUContext, data: ArrayData, shape: Vec<usize>) -> Self {
+    fn new_with_ctx(context: &GPUContext, data: Vec<T>, shape: Vec<usize>) -> Self {
         Self::new_with_name(context, Uuid::new_v4().to_string().as_str(), data, shape)
     }
 
-    fn new_with_name(context: &GPUContext, id: &str, data: ArrayData, shape: Vec<usize>) -> Self {
-        let (storage_buf, staging_buf) = match &data {
-            ArrayData::F32(vals) => {
-                let storage_buf = create_storage_buf::<f32>(
-                    &context.executor.read().unwrap().device,
-                    &id,
-                    Some(vals),
-                    &shape,
-                );
-                let staging_buf = create_staging_buf::<f32>(
-                    &context.executor.read().unwrap().device,
-                    &id,
-                    &None,
-                    &shape,
-                );
-                (storage_buf, staging_buf)
-            }
-        };
+    fn new_with_name(context: &GPUContext, id: &str, data: Vec<T>, shape: Vec<usize>) -> Self {
+        let storage_buf = create_storage_buf(
+            &context.executor.read().unwrap().device,
+            &id,
+            Some(&data),
+            &shape,
+        );
+        let staging_buf = create_staging_buf::<T>(
+            &context.executor.read().unwrap().device,
+            &id,
+            &None,
+            &shape,
+        );
 
+        let dtype = data.get_type();
         Self {
             id: id.to_string(),
             initializer: true,
+            init_data: Some(data),
             context_id: context.id,
-            data_type: data.dtype(),
+            data_type: dtype,
             shape: shape.clone(),
             strides: shape_to_strides(&shape),
             executor: context.executor.clone(),
@@ -163,15 +160,15 @@ impl GPUArray {
         }
     }
 
-    pub fn add(&self, other: &GPUArray) -> GPUArray {
+    pub fn add(&self, other: &GPUArray<T>) -> GPUArray<T> {
         self.bin_op_broadcast(other, Add {})
     }
 
-    pub fn matmul(&self, other: &GPUArray) -> GPUArray {
+    pub fn matmul(&self, other: &GPUArray<T>) -> GPUArray<T> {
         self.bin_op_broadcast(other, MatMul {})
     }
 
-    pub fn bin_op_broadcast<T: Shader>(&self, other: &GPUArray, op_type: T) -> GPUArray {
+    pub fn bin_op_broadcast<S: Shader>(&self, other: &GPUArray<T>, op_type: S) -> GPUArray<T> {
         if self.context_id != other.context_id {
             panic!("cannot do operations on GPUArray from different execution context")
         }
@@ -182,7 +179,7 @@ impl GPUArray {
         let (res_shape, _, _, _) = compute_broadcasted_shape_and_strides(&self.shape, &other.shape, &self.strides, &other.strides);
         let res_strides = shape_to_strides(&res_shape);
         let (res_storage_buf, staging_buf) = match &self.data_type {
-            DataType::F32 => {
+            GPUDataType::F32 => {
                 let storage_buf = create_storage_buf::<f32>(
                     &self.executor.read().unwrap().device,
                     &res_id,
@@ -202,6 +199,7 @@ impl GPUArray {
         let res_gpu = Self {
             id: res_id.clone(),
             initializer: false,
+            init_data: None,
             context_id: self.context_id,
             data_type: self.data_type.clone(),
             shape: res_shape,
@@ -308,11 +306,11 @@ impl GPUArray {
     /// This method copies the actual data from GPU, wrap it as ArrayData then
     /// return it. This method should be used sparingly since frequent GPU <-> CPU data
     /// transfer is costly.
-    pub fn data(&self) -> ArrayData {
+    pub fn data(&self) -> Vec<T> {
         pollster::block_on(self.fetch())
     }
 
-    async fn fetch(&self) -> ArrayData {
+    async fn fetch(&self) -> Vec<T> {
         // if this array is an initializer, we first copy the data from the main buffer to
         // the staging buffer since we didn't do that by default to conserve GPU memory.
         if self.initializer {
@@ -346,91 +344,61 @@ impl GPUArray {
 
         if let Ok(Ok(())) = receiver.recv_async().await {
             let data = staging_slice.get_mapped_range();
-            let array_data = match self.data_type {
-                DataType::F32 => ArrayData::F32(bytemuck::cast_slice(&data).to_vec()),
-            };
+            let vec_data = bytemuck::cast_slice(&data).to_vec();
 
             drop(data);
             staging_buf.unmap();
-            return array_data;
+            return vec_data;
         } else {
             panic!("Cannot run on GPU")
         }
     }
 }
 
-#[cfg(test)]
-#[allow(irrefutable_let_patterns)]
-#[allow(unreachable_code)]
 mod test {
-    use crate::gpu::array::{ArrayData, GPUArray};
+    use crate::gpu::array::GPUArray;
     use crate::gpu::context::GPUContext;
 
     #[test]
     fn test_simple_add() {
         let ctx = GPUContext::new();
-        let x = GPUArray::new_with_ctx(&ctx, ArrayData::F32(vec![1., 2., 3.]), vec![1, 3]);
-        let y = GPUArray::new_with_ctx(&ctx, ArrayData::F32(vec![2., 3., 4.]), vec![1, 3]);
+        let x = GPUArray::new_with_ctx(&ctx, vec![1., 2., 3.], vec![1, 3]);
+        let y = GPUArray::new_with_ctx(&ctx, vec![2., 3., 4.], vec![1, 3]);
         let res = x.add(&y);
 
-        if let ArrayData::F32(val) = x.data() {
-            assert_eq!(val, vec![1., 2., 3.])
-        } else {
-            panic!("Should be F32")
-        }
-
-        if let ArrayData::F32(val) = res.data() {
-            assert_eq!(val, vec![3., 5., 7.])
-        } else {
-            panic!("Should be F32")
-        }
+        assert_eq!(x.data(), vec![1., 2., 3.]);
+        assert_eq!(res.data(), vec![3., 5., 7.]);
     }
 
     #[test]
     fn test_add_bcast() {
         let ctx = GPUContext::new();
-        let x = GPUArray::new_with_ctx(&ctx, ArrayData::F32(vec![1., 2., 3., 4.]), vec![2, 2]);
-        let y = GPUArray::new_with_ctx(&ctx, ArrayData::F32(vec![10., 10.]), vec![2]);
+        let x = GPUArray::new_with_ctx(&ctx, vec![1., 2., 3., 4.], vec![2, 2]);
+        let y = GPUArray::new_with_ctx(&ctx, vec![10., 10.], vec![2]);
         let res = x.add(&y);
-        if let ArrayData::F32(val) = res.data() {
-            assert_eq!(val, vec![11., 12., 13., 14.])
-        } else {
-            panic!("Should be F32")
-        }
+        assert_eq!(res.data(), vec![11., 12., 13., 14.]);
 
-        let x = GPUArray::new(ArrayData::F32(vec![1., 2., 3., 4.]), vec![2, 2]);
-        let y = GPUArray::new(ArrayData::F32(vec![10., 10.]), vec![2, 1]);
+        let x = GPUArray::new_with_ctx(&ctx, vec![1., 2., 3., 4.], vec![2, 2]);
+        let y = GPUArray::new_with_ctx(&ctx, vec![10., 10.], vec![2, 1]);
         let res = x.add(&y);
-        if let ArrayData::F32(val) = res.data() {
-            assert_eq!(val, vec![11., 12., 13., 14.])
-        } else {
-            panic!("Should be F32")
-        }
+        assert_eq!(res.data(), vec![11., 12., 13., 14.]);
     }
 
     #[test]
     fn test_add_bcast_bidirection() {
         let ctx = GPUContext::new();
-        let x = GPUArray::new_with_ctx(&ctx, ArrayData::F32(vec![1., 2., 3.]), vec![3]);
-        let y = GPUArray::new_with_ctx(&ctx, ArrayData::F32(vec![1., 2., 3.]), vec![3, 1]);
+        let x = GPUArray::new_with_ctx(&ctx, vec![1., 2., 3.], vec![3]);
+        let y = GPUArray::new_with_ctx(&ctx, vec![1., 2., 3.], vec![3, 1]);
         let res = x.add(&y);
-        if let ArrayData::F32(val) = res.data() {
-            assert_eq!(val, vec![2.0, 3.0, 4.0, 3.0, 4.0, 5.0, 4.0, 5.0, 6.0])
-        } else {
-            panic!("Should be F32")
-        }
+        assert_eq!(res.data(), vec![2.0, 3.0, 4.0, 3.0, 4.0, 5.0, 4.0, 5.0, 6.0]);
     }
 
     #[test]
     fn test_matmul() {
-        let x = GPUArray::new(ArrayData::F32(vec![1., 2., 3., 4.]), vec![2, 2]);
-        let y = GPUArray::new(ArrayData::F32(vec![2., 2., 2., 2.]), vec![2, 2]);
+        let ctx = GPUContext::new();
+        let x = GPUArray::new_with_ctx(&ctx, vec![1., 2., 3., 4.], vec![2, 2]);
+        let y = GPUArray::new_with_ctx(&ctx, vec![2., 2., 2., 2.], vec![2, 2]);
         let res = x.matmul(&y);
-
-        if let ArrayData::F32(val) = res.data() {
-            assert_eq!(val, vec![6., 6., 14., 14.])
-        } else {
-            panic!("Should be F32")
-        }
+        assert_eq!(res.data(), vec![6., 6., 14., 14.]);
     }
 }
