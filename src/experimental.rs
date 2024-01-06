@@ -19,9 +19,17 @@ enum ArrayData<EType> {
     GPUArray(GPUArray<EType>),
 }
 
-impl<EType> ArrayData<EType> {
-    pub fn new_cpu<S: AsRef<[usize]>>(shape: S, data: Vec<EType>) -> Result<ArrayData<EType>, Box<dyn Error>> {
-        Ok(ArrayData::CPUArray(ArrayD::from_shape_vec(shape.as_ref(), data)?))
+impl<EType> ArrayData<EType>
+    where
+        EType: ArithmeticOps + Clone + Pod + Default + Debug,
+        Vec<EType>: GetType {
+    pub fn new_cpu<S: AsRef<[usize]>>(shape: S, data: Vec<EType>) -> Result<ArrayData<EType>, TensoriaError> {
+        Ok(ArrayData::CPUArray(ArrayD::from_shape_vec(shape.as_ref(), data).map_err(|_| TensoriaError::CannotReshapeError {})?))
+    }
+    pub fn new_gpu(shape: Vec<usize>, data: Vec<EType>) -> Result<ArrayData<EType>, TensoriaError> {
+        let len = shape.iter().fold(1, |x, y| x * y);
+        if len != data.len() { return Err(TensoriaError::CannotReshapeError {}); }
+        Ok(ArrayData::GPUArray(GPUArray::new(data, shape)))
     }
 }
 
@@ -61,7 +69,7 @@ impl<EType> Tensor<EType>
     pub fn new<S: AsRef<[usize]>>(shape: S, data: Vec<EType>) -> Result<Tensor<EType>, TensoriaError> {
         let tp = Arc::new(RwLock::new(
             TensorPointer {
-                data: ArrayData::new_cpu(shape, data).map_err(|_| TensoriaError::CannotReshapeError {})?,
+                data: ArrayData::new_cpu(shape, data)?,
                 grad: None,
                 deps: Default::default(),
             }
@@ -82,13 +90,35 @@ impl<EType> Tensor<EType>
         let rdata = &other.tp.read().unwrap().data;
 
         let res_data = ldata.arr_add(rdata);
-        
+
         let tp = Arc::new(RwLock::new(TensorPointer {
             data: res_data,
             deps: vec![self.tp.clone(), other.tp.clone()],
             grad: None,
         }));
         Self { tp, requires_grad: self.requires_grad || other.requires_grad }
+    }
+
+    /// This will return a Tensor with data located in the GPU.
+    /// This operation will detach the tensor from the graph.
+    pub fn to_gpu(&self) -> Result<Self, TensoriaError> {
+        let data = &self.tp.read().unwrap().data;
+        let res = match data {
+            ArrayData::CPUArray(arr) => {
+                Ok(Self {
+                    tp: Arc::new(RwLock::new(TensorPointer {
+                        data: ArrayData::new_gpu(arr.shape().to_vec(), arr.as_standard_layout().as_slice().unwrap().to_vec()).unwrap(),
+                        grad: None,
+                        deps: vec![],
+                    })),
+                    requires_grad: self.requires_grad,
+                })
+            }
+            ArrayData::GPUArray(_) => {
+                Err(TensoriaError::AlreadyGPUTensor {})
+            }
+        };
+        res
     }
 }
 
@@ -103,6 +133,7 @@ impl<EType> Add for &Tensor<EType>
 
 #[cfg(test)]
 mod test {
+    use crate::error::TensoriaError;
     use crate::experimental::Tensor;
 
     #[test]
@@ -111,5 +142,14 @@ mod test {
         let y = Tensor::new([1, 2], vec![3., 4.]).unwrap();
         let res = &x + &y;
         assert_eq!(res.data(), vec![4., 6.]);
+    }
+
+    #[test]
+    fn simple_add_gpu() -> Result<(), TensoriaError> {
+        let x = Tensor::new([1, 2], vec![1., 2.])?.to_gpu()?;
+        let y = Tensor::new([1, 2], vec![3., 4.])?.to_gpu()?;
+        let res = &x + &y;
+        assert_eq!(res.data(), vec![4., 6.]);
+        Ok(())
     }
 }

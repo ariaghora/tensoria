@@ -123,11 +123,11 @@ pub fn compute_broadcasted_shape_and_strides(
 }
 
 impl<T: Clone + Pod + Default + Debug> GPUArray<T> where Vec<T>: GetType {
-    fn new(data: Vec<T>, shape: Vec<usize>) -> Self {
+    pub fn new(data: Vec<T>, shape: Vec<usize>) -> Self {
         Self::new_with_ctx(&GLOBAL_CTX, data, shape)
     }
 
-    fn new_with_ctx(context: &GPUContext, data: Vec<T>, shape: Vec<usize>) -> Self {
+    pub fn new_with_ctx(context: &GPUContext, data: Vec<T>, shape: Vec<usize>) -> Self {
         Self::new_with_name(context, Uuid::new_v4().to_string().as_str(), data, shape)
     }
 

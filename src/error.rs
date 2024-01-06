@@ -6,6 +6,7 @@ pub enum TensoriaError {
     AccessingMismatchedType,
     DeviceNotCreated,
     BackwardOnTensorWithNoGrad,
+    AlreadyGPUTensor,
 }
 
 impl Display for TensoriaError {
