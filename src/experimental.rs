@@ -5,7 +5,6 @@ use std::sync::{Arc, RwLock};
 use ndarray::ArrayD;
 
 use crate::error::TensoriaError;
-use crate::gpu::array::GPUArray;
 use crate::traits::ArithmeticOps;
 
 enum Device { CPU, GPU }
@@ -14,7 +13,7 @@ enum Device { CPU, GPU }
 #[derive(Clone, Debug)]
 enum ArrayData<EType> {
     CPUArray(ArrayD<EType>),
-    GPUArray(GPUArray),
+    // GPUArray(GPUArray),
 }
 
 impl<EType> ArrayData<EType> {
@@ -72,6 +71,7 @@ impl<EType: ArithmeticOps> Tensor<EType> {
         let tp = Arc::new(RwLock::new(TensorPointer {
             data: res_data,
             deps: vec![self.tp.clone(), other.tp.clone()],
+            grad: None,
         }));
         Self { tp, requires_grad: self.requires_grad || other.requires_grad }
     }
