@@ -7,10 +7,10 @@ use include_dir::{Dir, include_dir};
 use lazy_static::lazy_static;
 use uuid::Uuid;
 use wgpu::BindGroupEntry;
+use wgpu::util::DeviceExt;
 
 use crate::gpu::context::{Executor, GPUContext};
 use crate::gpu::op_type::{Add, MatMul, Shader};
-use crate::wgpu::tensor::{create_staging_buf, create_storage_buf};
 
 static PROJECT_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/gpu/wgsl/");
 
@@ -428,4 +428,66 @@ mod test {
         let res = x.matmul(&y);
         assert_eq!(res.data(), vec![6., 6., 14., 14.]);
     }
+}
+
+pub fn create_storage_buf<'a, T: bytemuck::Pod + Default + Debug>(
+    device: &wgpu::Device,
+    buf_label: &str,
+    values: Option<&'a Vec<T>>,
+    shape: &Vec<usize>,
+) -> wgpu::Buffer {
+    let mut n_items = shape.iter().fold(1, |x, y| x * y) as usize;
+    // TODO: proper handling on 0-sized dims or non-zero-length shape but containing 0-length dim
+    if n_items == 0 {
+        n_items = 1;
+    }
+    let vals: Cow<'a, Vec<T>> = match values {
+        Some(v) => Cow::Borrowed(v),
+        None => Cow::Owned(vec![T::default(); n_items]),
+    };
+
+    // Some models provides tensors with empty data, i.e., with shape [0]. WGPU does not
+    // allow zero buffer binding, so we trick it by using a "dummy" buffer binding with
+    // size of 4 (minimum allowed)
+    let tensor_has_data = vals.len() > 0;
+    let data = if tensor_has_data {
+        // We create buffer initialized with tensor's original data
+        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some(format!("{}.storage", buf_label).as_str()),
+            contents: bytemuck::cast_slice(&vals),
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
+        })
+    } else {
+        // The dummy buffer
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(format!("{}.storage", buf_label).as_str()),
+            size: 4,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: true,
+        })
+    };
+    data
+}
+
+pub fn create_staging_buf<'a, T: bytemuck::Pod + Default + Debug>(
+    device: &wgpu::Device,
+    buf_label: &str,
+    values: &'a Option<Vec<T>>,
+    shape: &Vec<usize>,
+) -> wgpu::Buffer {
+    let n_items = shape.iter().fold(1, |x, y| x * y) as usize;
+    let vals: Cow<'a, Vec<T>> = match values {
+        Some(v) => Cow::Borrowed(v),
+        None => Cow::Owned(vec![T::default(); n_items]),
+    };
+    let data = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some(format!("{}.staging", buf_label).as_str()),
+        contents: bytemuck::cast_slice(&vals),
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+    });
+    data
 }

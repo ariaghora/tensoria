@@ -289,7 +289,7 @@ impl<EType> Add for &Tensor<EType>
 #[cfg(test)]
 mod test {
     use crate::error::TensoriaError;
-    use crate::experimental::{ArrayData, Device, Tensor};
+    use crate::tensor::{ArrayData, Device, Tensor};
 
     #[test]
     fn simple_add() {
