@@ -77,7 +77,6 @@ pub struct TensorPointer<EType> {
     data: ArrayData<EType>,
     grad: Option<ArrayData<EType>>,
     deps: Vec<Arc<RwLock<TensorPointer<EType>>>>,
-    backward_fn: Option<BackwardFn<EType>>,
     grad_fn: Option<GradFn<EType>>,
 }
 
@@ -101,7 +100,6 @@ impl<EType> Tensor<EType>
             TensorPointer {
                 data: ArrayData::new_cpu(shape, data)?,
                 grad: None,
-                backward_fn: None,
                 grad_fn: None,
                 deps: Default::default(),
             }
@@ -214,7 +212,6 @@ impl<EType> Tensor<EType>
                         data: ArrayData::new_gpu(arr.shape().to_vec(), arr.as_standard_layout().as_slice().unwrap().to_vec()).unwrap(),
                         grad: None,
                         grad_fn: self.tp.read().unwrap().grad_fn,
-                        backward_fn: self.tp.read().unwrap().backward_fn,
                         deps: vec![],
                     })),
                     requires_grad: false,
@@ -269,7 +266,6 @@ impl<EType> Tensor<EType>
         let tp = Arc::new(RwLock::new(TensorPointer {
             data: res_data,
             deps: vec![self.tp.clone(), other.tp.clone()],
-            backward_fn: None,
             grad: None,
             grad_fn: None,
         }));
