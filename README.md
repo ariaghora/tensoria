@@ -1,15 +1,15 @@
-<p align="center">
+<h3 align="center">
+    ᕕ(⌐■_■)ᕗ ♪♬
+</h3>
+
+<h3 align="center">
     <b>T E N S O R I A</b>
-</p>
+</h3>
 
 
 <p align="center">
 A tensor manipulation library running on GPU, self-contained, in pure rust
 </p>
-
-<h3 align="center">
-    ᕕ(⌐■_■)ᕗ ♪♬
-</h3>
 
 ## Example
 
