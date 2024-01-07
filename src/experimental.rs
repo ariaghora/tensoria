@@ -1,11 +1,9 @@
-use std::error::Error;
 use std::fmt::Debug;
 use std::ops::Add;
 use std::sync::{Arc, RwLock};
 
 use bytemuck::Pod;
 use ndarray::ArrayD;
-use num_traits::NumCast;
 use uuid::Uuid;
 
 use crate::error::TensoriaError;
@@ -13,11 +11,11 @@ use crate::gpu::array::{GetType, GPUArray};
 use crate::traits::ArithmeticOps;
 
 #[derive(PartialEq, Debug)]
-enum Device { CPU, GPU }
+pub enum Device { CPU, GPU }
 
 
 #[derive(Debug)]
-enum ArrayData<EType> {
+pub enum ArrayData<EType> {
     CPUArray(ArrayD<EType>),
     GPUArray(GPUArray<EType>),
 }
@@ -66,7 +64,7 @@ impl<EType> ArrayData<EType>
             (ArrayData::CPUArray(ldata), ArrayData::CPUArray(rdata)) => {
                 ArrayData::CPUArray(ldata * rdata)
             }
-            (ArrayData::GPUArray(ldata_gpu), ArrayData::GPUArray(rdata_gpu)) => {
+            (ArrayData::GPUArray(_ldata_gpu), ArrayData::GPUArray(_rdata_gpu)) => {
                 // ArrayData::GPUArray(ldata_gpu.mul(rdata_gpu))
                 todo!("arr_mul not implemented yet")
             }
@@ -75,11 +73,12 @@ impl<EType> ArrayData<EType>
     }
 }
 
-pub(crate) struct TensorPointer<EType> {
+pub struct TensorPointer<EType> {
     data: ArrayData<EType>,
     grad: Option<ArrayData<EType>>,
     deps: Vec<Arc<RwLock<TensorPointer<EType>>>>,
     backward_fn: Option<BackwardFn<EType>>,
+    grad_fn: Option<GradFn<EType>>,
 }
 
 pub struct Tensor<EType> {
@@ -91,6 +90,7 @@ pub struct Tensor<EType> {
 }
 
 type BackwardFn<EType> = fn(&Vec<Arc<RwLock<TensorPointer<EType>>>>, &Arc<RwLock<TensorPointer<EType>>>);
+type GradFn<EType> = fn(old_grad: &ArrayData<EType>, parent_grad: &ArrayData<EType>, parent: &Arc<RwLock<TensorPointer<EType>>>) -> ArrayData<EType>;
 
 impl<EType> Tensor<EType>
     where
@@ -102,6 +102,7 @@ impl<EType> Tensor<EType>
                 data: ArrayData::new_cpu(shape, data)?,
                 grad: None,
                 backward_fn: None,
+                grad_fn: None,
                 deps: Default::default(),
             }
         ));
@@ -128,20 +129,24 @@ impl<EType> Tensor<EType>
     }
 
     fn backward_from_tp(&self, tp: &Arc<RwLock<TensorPointer<EType>>>) {
-        let backward_fn_opt = tp.read().unwrap().backward_fn;
-        if let Some(backward_fn) = backward_fn_opt {
-            // run backward function for current tensor to obtain gradients of its dependencies
-            let deps_arc = &tp
-                .read()
-                .unwrap()
-                .deps;
-            let grad_arc = tp;
-            backward_fn(deps_arc, grad_arc); // mutating the deps' grad
-        }
-
         // recursively invoke backward on each
+        let parent_grad_opt = &tp.read().unwrap().grad;
+
         for dep in &tp.read().unwrap().deps {
-            self.backward_from_tp(dep)
+            let new_grad = {
+                let grad_fn_opt = &dep.read().unwrap().grad_fn;
+                if let (Some(old_grad), Some(parent_grad), Some(grad_fn)) =
+                    (&dep.read().unwrap().grad, parent_grad_opt, grad_fn_opt) {
+
+                    // calculate new grad for dep
+                    let new_grad = grad_fn(old_grad, parent_grad, tp);
+                    Some(new_grad)
+                } else {
+                    None
+                }
+            };
+            dep.write().unwrap().grad = new_grad;
+            self.backward_from_tp(dep);
         }
     }
 
@@ -201,13 +206,14 @@ impl<EType> Tensor<EType>
     /// This operation will detach the tensor from the graph.
     pub fn to_gpu(&self) -> Result<Self, TensoriaError> {
         let data = &self.tp.read().unwrap().data;
-        let mut res = match data {
+        let res = match data {
             ArrayData::CPUArray(arr) => {
                 let mut new_arr = Self {
                     id: self.id,
                     tp: Arc::new(RwLock::new(TensorPointer {
                         data: ArrayData::new_gpu(arr.shape().to_vec(), arr.as_standard_layout().as_slice().unwrap().to_vec()).unwrap(),
                         grad: None,
+                        grad_fn: self.tp.read().unwrap().grad_fn,
                         backward_fn: self.tp.read().unwrap().backward_fn,
                         deps: vec![],
                     })),
@@ -235,68 +241,37 @@ impl<EType> Tensor<EType>
     }
 }
 
-type BinopGradUpdateFn<T> = fn(l_arr: &ArrayData<T>, r_arr: &ArrayData<T>, out_grad: &ArrayData<T>) -> ArrayData<T>;
 
 impl<EType> Tensor<EType>
     where
         EType: ArithmeticOps + Clone + Pod + Default + Debug,
         Vec<EType>: GetType {
     pub fn tensor_add(&self, other: &Tensor<EType>) -> Self {
-        let l_grad_update_fn: BinopGradUpdateFn<EType> = |l, r, g| {
-            l.arr_add(g)
-        };
-        let r_grad_update_fn: BinopGradUpdateFn<EType> = |l, r, g| {
-            r.arr_add(g)
-        };
-        self.tensor_binop(other, l_grad_update_fn, r_grad_update_fn)
+        let lgf: Option<GradFn<EType>> = Some(|lg, og, _| {
+            lg.arr_add(og)
+        });
+        let rgf: Option<GradFn<EType>> = Some(|rg, og, _| {
+            rg.arr_add(og)
+        });
+        self.tensor_binop(other, lgf, rgf)
     }
 
-    pub fn tensor_binop(
-        &self, other: &Tensor<EType>, l_grad_update_fn: BinopGradUpdateFn<EType>, r_grad_update_fn: BinopGradUpdateFn<EType>,
-    ) -> Self {
+    pub fn tensor_binop(&self, other: &Tensor<EType>, l_grad_fn: Option<GradFn<EType>>, r_grad_fn: Option<GradFn<EType>>) -> Self {
+        self.tp.write().unwrap().grad_fn = l_grad_fn;
+        other.tp.write().unwrap().grad_fn = r_grad_fn;
+
         let ldata = &self.tp.read().unwrap().data;
         let rdata = &other.tp.read().unwrap().data;
         let res_data = ldata.arr_add(rdata);
 
         let requires_grad = self.requires_grad || other.requires_grad;
 
-        let bacward_fn: Option<BackwardFn<EType>> = if requires_grad {
-            let func = |deps: &Vec<Arc<RwLock<TensorPointer<EType>>>>, tensor: &Arc<RwLock<TensorPointer<EType>>>| {
-                let new_l_grad = {
-                    let grad_arr_opt = &tensor.read().unwrap().grad;
-                    let l_grad_opt = &deps[0].read().unwrap().grad;
-                    if let (Some(l_arr), Some(grad_arr)) = (l_grad_opt, grad_arr_opt) {
-                        // TODO: this should generalize to other binary op
-                        Some(l_arr.arr_add(grad_arr))
-                    } else {
-                        None
-                    }
-                };
-                deps[0].write().unwrap().grad = new_l_grad;
-
-                let new_r_grad = {
-                    let grad_arr_opt = &tensor.read().unwrap().grad;
-                    let r_grad_opt = &deps[1].read().unwrap().grad;
-                    if let (Some(r_arr), Some(grad_arr)) = (r_grad_opt, grad_arr_opt) {
-                        // TODO: this should generalize to other binary op
-                        Some(r_arr.arr_add(grad_arr))
-                    } else {
-                        None
-                    }
-                };
-                deps[1].write().unwrap().grad = new_r_grad;
-            };
-
-            Some(func)
-        } else {
-            None
-        };
-
         let tp = Arc::new(RwLock::new(TensorPointer {
             data: res_data,
             deps: vec![self.tp.clone(), other.tp.clone()],
-            backward_fn: bacward_fn,
+            backward_fn: None,
             grad: None,
+            grad_fn: None,
         }));
 
 
@@ -317,8 +292,6 @@ impl<EType> Add for &Tensor<EType>
 
 #[cfg(test)]
 mod test {
-    use std::ops::Add;
-
     use crate::error::TensoriaError;
     use crate::experimental::{ArrayData, Device, Tensor};
 
@@ -369,7 +342,7 @@ mod test {
         let mut x = Tensor::new([2], vec![1., 2.]).unwrap();
         x.set_requires_grad(true);
         let y = Tensor::new([2], vec![3., 4.]).unwrap();
-        let res = x.add(&y);
+        let res = &x + &y;
 
         assert_eq!(res.tp.read().unwrap().deps.len(), 2);
 

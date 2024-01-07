@@ -64,6 +64,30 @@ pub struct GPUArray<T> {
     staging_buffer: wgpu::Buffer,
 }
 
+impl<T: Default + Clone + Pod + Default + Debug> Clone for GPUArray<T>
+    where Vec<T>: GetType {
+    fn clone(&self) -> Self {
+        if let Some(init_data) = &self.init_data {
+            let mut arr = GPUArray::new(init_data.clone(), self.shape.clone());
+            arr.id = self.id.clone();
+            arr.data_type = self.data_type.clone();
+            arr.initializer = self.initializer;
+            arr.context_id = self.context_id;
+            arr.executor = self.executor.clone();
+            return arr;
+        } else {
+            let init_data = self.data();
+            let mut arr = GPUArray::new(init_data.clone(), self.shape.clone());
+            arr.id = self.id.clone();
+            arr.data_type = self.data_type.clone();
+            arr.initializer = self.initializer;
+            arr.context_id = self.context_id;
+            arr.executor = self.executor.clone();
+            return arr;
+        }
+    }
+}
+
 impl<T> Debug for GPUArray<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "GPUArray(id={})", self.id)
