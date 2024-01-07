@@ -1,34 +1,34 @@
 <h3 align="center">
-    ᕕ(⌐■_■)ᕗ ♪♬
-</h3>
-
-<h3 align="center">
     <b>T E N S O R I A</b>
 </h3>
 
+<h4 align="center">
+    ᕕ(⌐■_■)ᕗ ♪♬
+</h4>
+
+---
 
 <p align="center">
-A tensor manipulation library running on GPU, self-contained, in pure rust
+An ergonomic tensor manipulation library running on GPU, self-contained, in pure rust
 </p>
 
 ## Example
 
 ```rust
-fn main() {
-    let sess = Session::new();
+use std::error::Error;
 
-    let a = sess.new_tensor_var(Some(TensorData::F32(vec![1.0, 2.0])), vec![2]).unwrap();
-    let b = sess.new_tensor_var(Some(TensorData::F32(vec![3.0, 4.0])), vec![2]).unwrap();
-    let res = a.add(&b);
+fn main() -> Result<(), Box<dyn Error>> {
+    let x = Tensor::new([1, 2], vec![1., 2.]).unwrap();
+    let y = Tensor::new([1, 2], vec![3., 4.]).unwrap();
+    let res = &x + &y;
+    assert_eq!(res.data(), vec![4., 6.]);
 
-    let mut executor = GPUExecutor::new();
-    executor.execute(&sess).unwrap();
+    // Or use GPU (via WGPU) if you wish
+    let x = Tensor::new([1, 2], vec![1., 2.])?.to_gpu()?;
+    let y = Tensor::new([1, 2], vec![3., 4.])?.to_gpu()?;
+    let res = &x + &y;
+    assert_eq!(res.data(), vec![4., 6.]);
 
-    let res_gpu = executor.tensors.get(&res.id).unwrap();
-    if let GPUTensorData::F32(data) = &res_gpu.data {
-        assert_eq!(data.as_slice().unwrap(), vec![4.0, 6.0])
-    } else {
-        panic!("result should be of type F32")
-    }
+    Ok(())
 }
 ```
