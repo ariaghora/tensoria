@@ -109,6 +109,8 @@ impl<EType> Tensor<EType>
             });
 
             self.tp.write().unwrap().grad = zero_grad;
+        } else {
+            self.tp.write().unwrap().grad = None;
         }
     }
 
