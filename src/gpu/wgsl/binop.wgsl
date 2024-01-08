@@ -33,5 +33,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var idx1 = idx;
     {% endif %}
 
-    output_0[idx] = input_0[idx0] + input_1[idx1];
+    let lhs = input_0[idx0];
+    let rhs = input_1[idx1];
+    var out = {{output_0_type}}(0);
+
+    // The `binop_stmt` is a placeholder in which we put the actual calculation
+    // of the output `out`. Each implementation is done in the host code `src/gpu/op_type.rs`.
+    {{ binop_stmt }}
+
+    output_0[idx] = out;
 }
