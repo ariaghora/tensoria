@@ -25,8 +25,8 @@ pub struct Tensor<EType> {
     requires_grad: bool,
 }
 
-type UnOpFn<EType> = fn(data: &ArrayData<EType>) -> ArrayData<EType>;
-type BinOpFn<EType> = fn(lhs: &ArrayData<EType>, rhs: &ArrayData<EType>) -> ArrayData<EType>;
+type UnOpFn<EType> = Box<dyn FnOnce(&ArrayData<EType>) -> ArrayData<EType>>;
+type BinOpFn<EType> = Box<dyn FnOnce(&ArrayData<EType>, &ArrayData<EType>) -> ArrayData<EType>>;
 type GradFn<EType> = fn(old_grad: &ArrayData<EType>, parent_grad: &ArrayData<EType>, parent: &Arc<RwLock<TensorPointer<EType>>>) -> ArrayData<EType>;
 
 impl<EType> Tensor<EType>
@@ -211,7 +211,7 @@ impl<EType> Tensor<EType>
             let og = &gradient_broadcasting(rg, og);
             rg.add(&og)
         });
-        let add_fn: BinOpFn<EType> = |a, b| { a.add(&b) };
+        let add_fn: BinOpFn<EType> = Box::new(|a, b| { a.add(&b) });
         self.tensor_binop(other, add_fn, lgf, rgf)
     }
 
@@ -228,7 +228,7 @@ impl<EType> Tensor<EType>
             let lhs = &parent.deps[0].read().unwrap().data;
             rg.add(&lhs.mul(&og))
         });
-        let mul_fn: BinOpFn<EType> = |a, b| { a.mul(&b) };
+        let mul_fn: BinOpFn<EType> = Box::new(|a, b| { a.mul(&b) });
         self.tensor_binop(other, mul_fn, lgf, rgf)
     }
 
@@ -241,8 +241,30 @@ impl<EType> Tensor<EType>
             let og = gradient_broadcasting(rg, og);
             rg.sub(&og)
         });
-        let sub_fn: BinOpFn<EType> = |a, b| { a.sub(&b) };
+        let sub_fn: BinOpFn<EType> = Box::new(|a, b| { a.sub(&b) });
         self.tensor_binop(other, sub_fn, lgf, rgf)
+    }
+
+    fn mean(&self, axis: Option<usize>, keep_dim: bool) -> Self {
+        let mean_fn: UnOpFn<EType> = Box::new(move |data| {
+            data.mean(axis, keep_dim)
+        });
+
+        let gf: Option<GradFn<EType>> = Some(|g, og, _| {
+            todo!()
+        });
+        self.tensor_unop(mean_fn, gf)
+    }
+
+    fn sum(&self, axis: Option<usize>, keep_dim: bool) -> Self {
+        let sum_fn: UnOpFn<EType> = Box::new(move |data| {
+            data.sum(axis, keep_dim)
+        });
+
+        let gf: Option<GradFn<EType>> = Some(|g, og, _| {
+            todo!()
+        });
+        self.tensor_unop(sum_fn, gf)
     }
 
     fn tensor_binop(
@@ -271,8 +293,6 @@ impl<EType> Tensor<EType>
         res.set_requires_grad(requires_grad);
         res
     }
-
-    fn tensor_sum(&self, axis: Option<usize>, keep_dim: bool) {}
 
     fn tensor_unop(
         &self,

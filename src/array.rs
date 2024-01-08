@@ -102,6 +102,26 @@ impl<EType> ArrayData<EType>
         }
     }
 
+    pub fn mean(&self, axis: Option<usize>, keep_dim: bool) -> ArrayData<EType> {
+        match self {
+            ArrayData::CPUArray(data) => {
+                match axis {
+                    None => {
+                        // TODO: handle scalar rank-0 "array"
+                        let mu = data.mean().unwrap();
+                        ArrayData::new_cpu([1], vec![mu]).unwrap()
+                    }
+                    Some(axis) => {
+                        let mut mu = data.mean_axis(Axis(axis)).unwrap();
+                        if keep_dim { mu = mu.insert_axis(Axis(axis)); }
+                        ArrayData::CPUArray(mu)
+                    }
+                }
+            }
+            ArrayData::GPUArray(data) => { todo!("sum is not implemented yet for GPUArray") }
+        }
+    }
+
     pub fn sum(&self, axis: Option<usize>, keep_dim: bool) -> ArrayData<EType> {
         match self {
             ArrayData::CPUArray(data) => {
