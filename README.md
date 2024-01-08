@@ -17,8 +17,14 @@ An ergonomic tensor manipulation library running on GPU, self-contained, in pure
 - Supports GPU with CPU fallback.
 - Provides automatic gradient computation (autograd).
 - Allows creation of tensors with arbitrary dimensions at runtime.
-- Offers an ergonomic API. **Note:** As a trade-off, tensor operations' shape checking occurs at runtime, potentially
+- Offers an ergonomic API.
+
+## Note
+
+- As a trade-off for easy API, tensor operations' shape checking occurs at runtime, potentially
   causing panics due to shape incompatibilities.
+- The internal implementation is not thread-safe yet, so please refrain from using this in multithreaded programs.
+  Consequently, when running `cargo test`, you need to specify `-- --test-threads=1`.
 
 ## Example
 
