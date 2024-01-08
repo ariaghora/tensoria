@@ -301,6 +301,11 @@ mod test {
         (&(&x * &x) * &x).backward()?;
         assert_eq!(x.grad().unwrap(), vec![3, 12, 27, 48]);
 
+        let mut x = Tensor::new([2, 2], vec![1, 2, 3, 4])?.to_gpu()?;
+        x.set_requires_grad(true);
+        (&(&x * &x) * &x).backward()?;
+        assert_eq!(x.grad().unwrap(), vec![3, 12, 27, 48]);
+
         Ok(())
     }
 
