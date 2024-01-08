@@ -14,11 +14,11 @@ An ergonomic tensor manipulation library running on GPU, self-contained, in pure
 
 ## Features
 
-- Supports GPU and CPU fallback
-- Automatic gradient computation (autograd)
-- Enables tensor creation with arbitrary dimension at runtime
-- Ergonomic API (**note:** as the trade-off, shape checking for tensor operations happen at runtime and may panic in
-  case of shape incompatibilities)
+- Supports GPU with CPU fallback.
+- Provides automatic gradient computation (autograd).
+- Allows creation of tensors with arbitrary dimensions at runtime.
+- Offers an ergonomic API. **Note:** As a trade-off, tensor operations' shape checking occurs at runtime, potentially
+  causing panics due to shape incompatibilities.
 
 ## Example
 
