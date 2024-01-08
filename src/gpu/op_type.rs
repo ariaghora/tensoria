@@ -106,6 +106,16 @@ impl Shader for Mul {
     }
 }
 
+pub struct Sub {}
+
+impl Shader for Sub {
+    fn shader_path(&self) -> String { "binop.wgsl".into() }
+
+    fn prepare<T>(&self, operands: Vec<&GPUArray<T>>, output: &GPUArray<T>, params: &mut Context) -> (u32, u32, u32) {
+        prepare_binop_broadcast_shader(operands, output, params, "out = lhs - rhs;")
+    }
+}
+
 pub struct MatMul {}
 
 impl Shader for MatMul {

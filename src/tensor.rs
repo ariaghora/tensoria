@@ -1,5 +1,5 @@
 use std::fmt::Debug;
-use std::ops::{Add, Mul};
+use std::ops::{Add, Mul, Sub};
 use std::sync::{Arc, RwLock};
 
 use bytemuck::Pod;
@@ -208,7 +208,18 @@ impl<EType> Tensor<EType>
         self.tensor_binop(other, mul_fn, lgf, rgf)
     }
 
-    pub fn tensor_binop(&self, other: &Tensor<EType>, binop_fn: BinOpFn<EType>, l_grad_fn: Option<GradFn<EType>>, r_grad_fn: Option<GradFn<EType>>) -> Self {
+    pub fn tensor_sub(&self, other: &Tensor<EType>) -> Self {
+        let lgf: Option<GradFn<EType>> = Some(|lg, og, _| {
+            lg.add(og)
+        });
+        let rgf: Option<GradFn<EType>> = Some(|rg, og, _| {
+            rg.sub(og)
+        });
+        let sub_fn: BinOpFn<EType> = |a, b| { a.sub(&b) };
+        self.tensor_binop(other, sub_fn, lgf, rgf)
+    }
+
+    fn tensor_binop(&self, other: &Tensor<EType>, binop_fn: BinOpFn<EType>, l_grad_fn: Option<GradFn<EType>>, r_grad_fn: Option<GradFn<EType>>) -> Self {
         self.tp.write().unwrap().grad_fn = l_grad_fn;
         other.tp.write().unwrap().grad_fn = r_grad_fn;
 
@@ -250,7 +261,17 @@ impl<EType> Mul for &Tensor<EType>
     }
 }
 
+impl<EType> Sub for &Tensor<EType>
+    where EType: ArithmeticOps + Clone + Pod + Default + Debug, Vec<EType>: GetType {
+    type Output = Tensor<EType>;
 
+    fn sub(self, rhs: Self) -> Self::Output {
+        self.tensor_sub(rhs)
+    }
+}
+
+
+/// The suites are solely to test tensor's autograd mechanism
 #[cfg(test)]
 mod test {
     use std::ops::Mul;
@@ -259,15 +280,7 @@ mod test {
     use crate::tensor::{ArrayData, Device, Tensor};
 
     #[test]
-    fn simple_add() {
-        let x = Tensor::new([1, 2], vec![1., 2.]).unwrap();
-        let y = Tensor::new([1, 2], vec![3., 4.]).unwrap();
-        let res = &x + &y;
-        assert_eq!(res.data(), vec![4., 6.]);
-    }
-
-    #[test]
-    fn simple_add_gpu() -> Result<(), TensoriaError> {
+    fn add() -> Result<(), TensoriaError> {
         let x = Tensor::new([1, 2], vec![1., 2.])?.to_gpu()?;
         let y = Tensor::new([1, 2], vec![3., 4.])?.to_gpu()?;
         let res = &x + &y;
@@ -281,6 +294,27 @@ mod test {
         let x = Tensor::new([2], vec![1., 2.])?.to_gpu()?;
         let y = Tensor::new([2, 1], vec![1., 2.])?.to_gpu()?;
         let res_gpu = (&x + &y).data();
+        assert_eq!(x.device(), Device::GPU);
+        assert_eq!(res_cpu, res_gpu);
+
+        Ok(())
+    }
+
+    #[test]
+    fn sub() -> Result<(), TensoriaError> {
+        let x = Tensor::new([1, 2], vec![1., 2.])?.to_gpu()?;
+        let y = Tensor::new([1, 2], vec![3., 4.])?.to_gpu()?;
+        let res = &x - &y;
+        assert_eq!(res.data(), vec![-2., -2.]);
+
+        let x = Tensor::new([2], vec![1., 2.])?;
+        let y = Tensor::new([2, 1], vec![1., 2.])?;
+        let res_cpu = (&x - &y).data();
+        assert_eq!(x.device(), Device::CPU);
+
+        let x = Tensor::new([2], vec![1., 2.])?.to_gpu()?;
+        let y = Tensor::new([2, 1], vec![1., 2.])?.to_gpu()?;
+        let res_gpu = (&x - &y).data();
         assert_eq!(x.device(), Device::GPU);
         assert_eq!(res_cpu, res_gpu);
 

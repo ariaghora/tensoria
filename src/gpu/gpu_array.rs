@@ -10,7 +10,7 @@ use wgpu::BindGroupEntry;
 use wgpu::util::DeviceExt;
 
 use crate::gpu::context::{Executor, GPUContext};
-use crate::gpu::op_type::{Add, MatMul, Mul, Shader};
+use crate::gpu::op_type::{MatMul, Shader};
 
 static PROJECT_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/gpu/wgsl/");
 
@@ -192,13 +192,13 @@ impl<T: Clone + Pod + Default + Debug> GPUArray<T> where Vec<T>: GetType {
         }
     }
 
-    pub fn add(&self, other: &GPUArray<T>) -> GPUArray<T> {
-        self.bin_op_broadcast(other, Add {})
-    }
-
-    pub fn mul(&self, other: &GPUArray<T>) -> GPUArray<T> {
-        self.bin_op_broadcast(other, Mul {})
-    }
+    // pub fn add(&self, other: &GPUArray<T>) -> GPUArray<T> {
+    //     self.bin_op_broadcast(other, Add {})
+    // }
+    //
+    // pub fn mul(&self, other: &GPUArray<T>) -> GPUArray<T> {
+    //     self.bin_op_broadcast(other, Mul {})
+    // }
 
     pub fn matmul(&self, other: &GPUArray<T>) -> GPUArray<T> {
         self.bin_op_broadcast(other, MatMul {})
@@ -386,53 +386,34 @@ impl<T: Clone + Pod + Default + Debug> GPUArray<T> where Vec<T>: GetType {
     }
 }
 
-mod test {
-    use crate::gpu::context::GPUContext;
-    use crate::gpu::gpu_array::GPUArray;
+/// Macro for several binary operators, so it is easier to implement it for both
+/// op(Self, &Self) and op(&Self, &Self)
+macro_rules! impl_bin_op {
+    ($trait:ident, $method:ident, $op:expr) => {
+        impl<T: Clone + Pod + Default + Debug> std::ops::$trait<&Self> for GPUArray<T>
+        where Vec<T>: GetType {
+            type Output = GPUArray<T>;
 
-    #[test]
-    fn test_simple_add() {
-        let ctx = GPUContext::new();
-        let x = GPUArray::new_with_ctx(&ctx, vec![1., 2., 3.], vec![1, 3]);
-        let y = GPUArray::new_with_ctx(&ctx, vec![2., 3., 4.], vec![1, 3]);
-        let res = x.add(&y);
+            fn $method(self, rhs: &Self) -> Self::Output {
+                self.bin_op_broadcast(rhs, $op)
+            }
+        }
 
-        assert_eq!(x.data(), vec![1., 2., 3.]);
-        assert_eq!(res.data(), vec![3., 5., 7.]);
-    }
+        impl<T: Clone + Pod + Default + Debug> std::ops::$trait for &GPUArray<T>
+        where Vec<T>: GetType {
+            type Output = GPUArray<T>;
 
-    #[test]
-    fn test_add_bcast() {
-        let ctx = GPUContext::new();
-        let x = GPUArray::new_with_ctx(&ctx, vec![1., 2., 3., 4.], vec![2, 2]);
-        let y = GPUArray::new_with_ctx(&ctx, vec![10., 10.], vec![2]);
-        let res = x.add(&y);
-        assert_eq!(res.data(), vec![11., 12., 13., 14.]);
-
-        let x = GPUArray::new_with_ctx(&ctx, vec![1., 2., 3., 4.], vec![2, 2]);
-        let y = GPUArray::new_with_ctx(&ctx, vec![10., 10.], vec![2, 1]);
-        let res = x.add(&y);
-        assert_eq!(res.data(), vec![11., 12., 13., 14.]);
-    }
-
-    #[test]
-    fn test_add_bcast_bidirection() {
-        let ctx = GPUContext::new();
-        let x = GPUArray::new_with_ctx(&ctx, vec![1., 2., 3.], vec![3]);
-        let y = GPUArray::new_with_ctx(&ctx, vec![1., 2., 3.], vec![3, 1]);
-        let res = x.add(&y);
-        assert_eq!(res.data(), vec![2.0, 3.0, 4.0, 3.0, 4.0, 5.0, 4.0, 5.0, 6.0]);
-    }
-
-    #[test]
-    fn test_matmul() {
-        let ctx = GPUContext::new();
-        let x = GPUArray::new_with_ctx(&ctx, vec![1., 2., 3., 4.], vec![2, 2]);
-        let y = GPUArray::new_with_ctx(&ctx, vec![2., 2., 2., 2.], vec![2, 2]);
-        let res = x.matmul(&y);
-        assert_eq!(res.data(), vec![6., 6., 14., 14.]);
-    }
+            fn $method(self, rhs: Self) -> Self::Output {
+                self.bin_op_broadcast(rhs, $op)
+            }
+        }
+    };
 }
+
+impl_bin_op!(Mul, mul, crate::gpu::op_type::Mul{});
+impl_bin_op!(Add, add, crate::gpu::op_type::Add{});
+impl_bin_op!(Sub, sub, crate::gpu::op_type::Sub{});
+
 
 pub fn create_storage_buf<'a, T: bytemuck::Pod + Default + Debug>(
     device: &wgpu::Device,
@@ -494,4 +475,54 @@ pub fn create_staging_buf<'a, T: bytemuck::Pod + Default + Debug>(
         usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
     });
     data
+}
+
+mod test {
+    use std::ops::Add;
+
+    use crate::gpu::context::GPUContext;
+    use crate::gpu::gpu_array::GPUArray;
+
+    #[test]
+    fn test_simple_add() {
+        let ctx = GPUContext::new();
+        let x = GPUArray::new_with_ctx(&ctx, vec![1., 2., 3.], vec![1, 3]);
+        let y = GPUArray::new_with_ctx(&ctx, vec![2., 3., 4.], vec![1, 3]);
+        let res = &x + &y;
+
+        assert_eq!(x.data(), vec![1., 2., 3.]);
+        assert_eq!(res.data(), vec![3., 5., 7.]);
+    }
+
+    #[test]
+    fn test_add_bcast() {
+        let ctx = GPUContext::new();
+        let x = GPUArray::new_with_ctx(&ctx, vec![1., 2., 3., 4.], vec![2, 2]);
+        let y = GPUArray::new_with_ctx(&ctx, vec![10., 10.], vec![2]);
+        let res = x + &y;
+        assert_eq!(res.data(), vec![11., 12., 13., 14.]);
+
+        let x = GPUArray::new_with_ctx(&ctx, vec![1., 2., 3., 4.], vec![2, 2]);
+        let y = GPUArray::new_with_ctx(&ctx, vec![10., 10.], vec![2, 1]);
+        let res = x.add(&y);
+        assert_eq!(res.data(), vec![11., 12., 13., 14.]);
+    }
+
+    #[test]
+    fn test_add_bcast_bidirection() {
+        let ctx = GPUContext::new();
+        let x = GPUArray::new_with_ctx(&ctx, vec![1., 2., 3.], vec![3]);
+        let y = GPUArray::new_with_ctx(&ctx, vec![1., 2., 3.], vec![3, 1]);
+        let res = x + &y;
+        assert_eq!(res.data(), vec![2.0, 3.0, 4.0, 3.0, 4.0, 5.0, 4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn test_matmul() {
+        let ctx = GPUContext::new();
+        let x = GPUArray::new_with_ctx(&ctx, vec![1., 2., 3., 4.], vec![2, 2]);
+        let y = GPUArray::new_with_ctx(&ctx, vec![2., 2., 2., 2.], vec![2, 2]);
+        let res = x.matmul(&y);
+        assert_eq!(res.data(), vec![6., 6., 14., 14.]);
+    }
 }
