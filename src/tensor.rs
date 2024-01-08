@@ -5,9 +5,9 @@ use std::sync::{Arc, RwLock};
 use bytemuck::Pod;
 use uuid::Uuid;
 
-use crate::arr::{ArrayData, Device};
+use crate::array::{ArrayData, Device};
 use crate::error::TensoriaError;
-use crate::gpu::array::GetType;
+use crate::gpu::gpu_array::GetType;
 use crate::traits::ArithmeticOps;
 
 pub struct TensorPointer<EType> {

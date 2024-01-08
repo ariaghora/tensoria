@@ -4,7 +4,7 @@ use bytemuck::Pod;
 use ndarray::ArrayD;
 
 use crate::error::TensoriaError;
-use crate::gpu::array::{GetType, GPUArray};
+use crate::gpu::gpu_array::{GetType, GPUArray};
 use crate::traits::ArithmeticOps;
 
 #[derive(PartialEq, Debug)]

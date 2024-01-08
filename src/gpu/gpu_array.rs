@@ -387,8 +387,8 @@ impl<T: Clone + Pod + Default + Debug> GPUArray<T> where Vec<T>: GetType {
 }
 
 mod test {
-    use crate::gpu::array::GPUArray;
     use crate::gpu::context::GPUContext;
+    use crate::gpu::gpu_array::GPUArray;
 
     #[test]
     fn test_simple_add() {

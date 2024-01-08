@@ -1,6 +1,6 @@
 use tera::Context;
 
-use crate::gpu::array::{compute_broadcasted_shape_and_strides, GPUArray};
+use crate::gpu::gpu_array::{compute_broadcasted_shape_and_strides, GPUArray};
 
 pub trait Shader {
     fn shader_path(&self) -> String;
