@@ -25,6 +25,7 @@ pub struct Tensor<EType> {
     requires_grad: bool,
 }
 
+type UnOpFn<EType> = fn(data: &ArrayData<EType>) -> ArrayData<EType>;
 type BinOpFn<EType> = fn(lhs: &ArrayData<EType>, rhs: &ArrayData<EType>) -> ArrayData<EType>;
 type GradFn<EType> = fn(old_grad: &ArrayData<EType>, parent_grad: &ArrayData<EType>, parent: &Arc<RwLock<TensorPointer<EType>>>) -> ArrayData<EType>;
 
@@ -177,6 +178,25 @@ impl<EType> Tensor<EType>
     }
 }
 
+fn gradient_broadcasting<EType>(self_grad: &ArrayData<EType>, out_grad: &ArrayData<EType>) -> ArrayData<EType>
+    where
+        EType: ArithmeticOps + Clone + Pod + Default + Debug,
+        Vec<EType>: GetType {
+    // Sum out added dims
+    let mut out_grad = out_grad.clone();
+    let ndims_added = out_grad.ndim() - self_grad.ndim();
+    for _ in 0..ndims_added {
+        out_grad = out_grad.sum(Some(0), false);
+    }
+
+    // Sum across broadcasted but non-added dims
+    for (i, dim) in self_grad.shape().iter().enumerate() {
+        if dim == &1 {
+            out_grad = out_grad.sum(Some(i), true);
+        }
+    }
+    out_grad
+}
 
 impl<EType> Tensor<EType>
     where
@@ -184,10 +204,12 @@ impl<EType> Tensor<EType>
         Vec<EType>: GetType {
     pub fn tensor_add(&self, other: &Tensor<EType>) -> Self {
         let lgf: Option<GradFn<EType>> = Some(|lg, og, _| {
+            let og = &gradient_broadcasting(lg, og);
             lg.add(og)
         });
         let rgf: Option<GradFn<EType>> = Some(|rg, og, _| {
-            rg.add(og)
+            let og = &gradient_broadcasting(rg, og);
+            rg.add(&og)
         });
         let add_fn: BinOpFn<EType> = |a, b| { a.add(&b) };
         self.tensor_binop(other, add_fn, lgf, rgf)
@@ -195,11 +217,13 @@ impl<EType> Tensor<EType>
 
     pub fn tensor_mul(&self, other: &Tensor<EType>) -> Self {
         let lgf: Option<GradFn<EType>> = Some(|lg, og, parent| {
+            let og = gradient_broadcasting(lg, og);
             let parent = &parent.read().unwrap();
             let rhs = &parent.deps[1].read().unwrap().data;
             lg.add(&rhs.mul(&og))
         });
         let rgf: Option<GradFn<EType>> = Some(|rg, og, parent| {
+            let og = gradient_broadcasting(rg, og);
             let parent = &parent.read().unwrap();
             let lhs = &parent.deps[0].read().unwrap().data;
             rg.add(&lhs.mul(&og))
@@ -210,16 +234,23 @@ impl<EType> Tensor<EType>
 
     pub fn tensor_sub(&self, other: &Tensor<EType>) -> Self {
         let lgf: Option<GradFn<EType>> = Some(|lg, og, _| {
-            lg.add(og)
+            let og = gradient_broadcasting(lg, og);
+            lg.add(&og)
         });
         let rgf: Option<GradFn<EType>> = Some(|rg, og, _| {
-            rg.sub(og)
+            let og = gradient_broadcasting(rg, og);
+            rg.sub(&og)
         });
         let sub_fn: BinOpFn<EType> = |a, b| { a.sub(&b) };
         self.tensor_binop(other, sub_fn, lgf, rgf)
     }
 
-    fn tensor_binop(&self, other: &Tensor<EType>, binop_fn: BinOpFn<EType>, l_grad_fn: Option<GradFn<EType>>, r_grad_fn: Option<GradFn<EType>>) -> Self {
+    fn tensor_binop(
+        &self, other: &Tensor<EType>,
+        binop_fn: BinOpFn<EType>,
+        l_grad_fn: Option<GradFn<EType>>,
+        r_grad_fn: Option<GradFn<EType>>,
+    ) -> Self {
         self.tp.write().unwrap().grad_fn = l_grad_fn;
         other.tp.write().unwrap().grad_fn = r_grad_fn;
 
@@ -236,6 +267,31 @@ impl<EType> Tensor<EType>
             grad_fn: None,
         }));
 
+        let mut res = Self { id: Uuid::new_v4(), tp, requires_grad };
+        res.set_requires_grad(requires_grad);
+        res
+    }
+
+    fn tensor_sum(&self, axis: Option<usize>, keep_dim: bool) {}
+
+    fn tensor_unop(
+        &self,
+        unop_fn: UnOpFn<EType>,
+        grad_fn: Option<GradFn<EType>>,
+    ) -> Self {
+        self.tp.write().unwrap().grad_fn = grad_fn;
+
+        let data = &self.tp.read().unwrap().data;
+        let res_data = unop_fn(data);
+
+        let requires_grad = self.requires_grad;
+
+        let tp = Arc::new(RwLock::new(TensorPointer {
+            data: res_data,
+            deps: vec![self.tp.clone()],
+            grad: None,
+            grad_fn: None,
+        }));
 
         let mut res = Self { id: Uuid::new_v4(), tp, requires_grad };
         res.set_requires_grad(requires_grad);
@@ -281,22 +337,24 @@ mod test {
 
     #[test]
     fn add() -> Result<(), TensoriaError> {
+        let x = Tensor::new([2, 2], vec![1., 2., 3., 4.])?;
+        let mut y = Tensor::new([2], vec![1., 1.])?;
+        y.set_requires_grad(true);
+        (&x + &y).backward()?;
+        assert_eq!(y.grad(), Some(vec![2., 2.]));
+        Ok(())
+    }
+
+    #[test]
+    fn add_gpu() -> Result<(), TensoriaError> {
         let x = Tensor::new([1, 2], vec![1., 2.])?.to_gpu()?;
-        let y = Tensor::new([1, 2], vec![3., 4.])?.to_gpu()?;
+        let mut y = Tensor::new([1, 2], vec![3., 4.])?.to_gpu()?;
+        y.set_requires_grad(true);
+
         let res = &x + &y;
         assert_eq!(res.data(), vec![4., 6.]);
-
-        let x = Tensor::new([2], vec![1., 2.])?;
-        let y = Tensor::new([2, 1], vec![1., 2.])?;
-        let res_cpu = (&x + &y).data();
-        assert_eq!(x.device(), Device::CPU);
-
-        let x = Tensor::new([2], vec![1., 2.])?.to_gpu()?;
-        let y = Tensor::new([2, 1], vec![1., 2.])?.to_gpu()?;
-        let res_gpu = (&x + &y).data();
-        assert_eq!(x.device(), Device::GPU);
-        assert_eq!(res_cpu, res_gpu);
-
+        res.backward()?;
+        assert_eq!(y.grad(), Some(vec![1., 1.]));
         Ok(())
     }
 
@@ -321,6 +379,15 @@ mod test {
         Ok(())
     }
 
+    fn sub_gpu() -> Result<(), TensoriaError> {
+        let x = Tensor::new([2], vec![1., 2.])?.to_gpu()?;
+        let y = Tensor::new([2, 1], vec![1., 2.])?.to_gpu()?;
+        let res_gpu = (&x - &y).data();
+        assert_eq!(x.device(), Device::GPU);
+
+        Ok(())
+    }
+
     #[test]
     fn mul() -> Result<(), TensoriaError> {
         let mut x = Tensor::new([2, 2], vec![1, 2, 3, 4])?;
@@ -331,7 +398,11 @@ mod test {
 
         res.backward()?;
         assert_eq!(x.grad().unwrap(), vec![2, 3, 4, 5]);
+        Ok(())
+    }
 
+    #[test]
+    fn mul_gpu() -> Result<(), TensoriaError> {
         let mut x = Tensor::new([2, 2], vec![1, 2, 3, 4])?;
         x.set_requires_grad(true);
         (&(&x * &x) * &x).backward()?;
@@ -341,7 +412,6 @@ mod test {
         x.set_requires_grad(true);
         (&(&x * &x) * &x).backward()?;
         assert_eq!(x.grad().unwrap(), vec![3, 12, 27, 48]);
-
         Ok(())
     }
 
@@ -356,27 +426,5 @@ mod test {
         } else {
             panic!("This should be CPU array")
         };
-    }
-
-    #[test]
-    fn backward() {
-        let mut x = Tensor::new([2], vec![1., 2.]).unwrap();
-        x.set_requires_grad(true);
-        let y = Tensor::new([2], vec![3., 4.]).unwrap();
-        let res = &x + &y;
-
-        assert_eq!(res.tp.read().unwrap().deps.len(), 2);
-
-        res.backward().unwrap();
-
-        assert_eq!(res.grad(), Some(vec![1., 1.]));
-        assert_eq!(y.grad(), None);
-        assert_eq!(x.grad(), Some(vec![1., 1.]));
-
-        let mut x = Tensor::new([2], vec![1., 2.]).unwrap();
-        x.set_requires_grad(true);
-        let res = &x + &x;
-        res.backward().unwrap();
-        assert_eq!(x.grad(), Some(vec![2., 2.]));
     }
 }

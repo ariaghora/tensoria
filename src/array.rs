@@ -40,6 +40,27 @@ impl<EType> ArrayData<EType>
         if len != data.len() { return Err(TensoriaError::CannotReshapeError {}); }
         Ok(ArrayData::GPUArray(GPUArray::new(data, shape.as_ref().to_vec())))
     }
+
+    pub fn clone(&self) -> Self {
+        match self {
+            ArrayData::CPUArray(data) => { Self::new_cpu(data.shape(), data.to_owned().into_raw_vec()).unwrap() }
+            ArrayData::GPUArray(data) => { todo!("GPUArray clone is not implemented yet") }
+        }
+    }
+
+    pub fn ndim(&self) -> usize {
+        match self {
+            ArrayData::CPUArray(data) => { data.ndim() }
+            ArrayData::GPUArray(data) => { data.shape.len() }
+        }
+    }
+
+    pub fn shape(&self) -> Vec<usize> {
+        match self {
+            ArrayData::CPUArray(data) => { data.shape().to_vec() }
+            ArrayData::GPUArray(data) => { data.shape.clone() }
+        }
+    }
 }
 
 /// Following set of implementations are related to public arithmetic functions
@@ -81,16 +102,19 @@ impl<EType> ArrayData<EType>
         }
     }
 
-    fn arr_sum(&self, axis: Option<usize>) -> ArrayData<EType> {
+    pub fn sum(&self, axis: Option<usize>, keep_dim: bool) -> ArrayData<EType> {
         match self {
             ArrayData::CPUArray(data) => {
                 match axis {
                     None => {
+                        // TODO: handle scalar rank-0 "array"
                         let sum = data.sum();
                         ArrayData::new_cpu([1], vec![sum]).unwrap()
                     }
                     Some(axis) => {
-                        ArrayData::CPUArray(data.sum_axis(Axis(axis)))
+                        let mut sum = data.sum_axis(Axis(axis));
+                        if keep_dim { sum = sum.insert_axis(Axis(axis)); }
+                        ArrayData::CPUArray(sum)
                     }
                 }
             }
