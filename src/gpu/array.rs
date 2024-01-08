@@ -10,7 +10,7 @@ use wgpu::BindGroupEntry;
 use wgpu::util::DeviceExt;
 
 use crate::gpu::context::{Executor, GPUContext};
-use crate::gpu::op_type::{Add, MatMul, Shader};
+use crate::gpu::op_type::{Add, MatMul, Mul, Shader};
 
 static PROJECT_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/gpu/wgsl/");
 
@@ -194,6 +194,10 @@ impl<T: Clone + Pod + Default + Debug> GPUArray<T> where Vec<T>: GetType {
 
     pub fn add(&self, other: &GPUArray<T>) -> GPUArray<T> {
         self.bin_op_broadcast(other, Add {})
+    }
+
+    pub fn mul(&self, other: &GPUArray<T>) -> GPUArray<T> {
+        self.bin_op_broadcast(other, Mul {})
     }
 
     pub fn matmul(&self, other: &GPUArray<T>) -> GPUArray<T> {

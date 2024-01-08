@@ -1,77 +1,14 @@
 use std::fmt::Debug;
-use std::ops::Add;
+use std::ops::{Add, Mul};
 use std::sync::{Arc, RwLock};
 
 use bytemuck::Pod;
-use ndarray::ArrayD;
 use uuid::Uuid;
 
+use crate::arr::{ArrayData, Device};
 use crate::error::TensoriaError;
-use crate::gpu::array::{GetType, GPUArray};
+use crate::gpu::array::GetType;
 use crate::traits::ArithmeticOps;
-
-#[derive(PartialEq, Debug)]
-pub enum Device { CPU, GPU }
-
-
-#[derive(Debug)]
-pub enum ArrayData<EType> {
-    CPUArray(ArrayD<EType>),
-    GPUArray(GPUArray<EType>),
-}
-
-impl<EType> ArrayData<EType> {
-    fn device(&self) -> Device {
-        match self {
-            ArrayData::CPUArray(_) => Device::CPU,
-            ArrayData::GPUArray(_) => Device::GPU
-        }
-    }
-}
-
-impl<EType> ArrayData<EType>
-    where
-        EType: ArithmeticOps + Clone + Pod + Default + Debug,
-        Vec<EType>: GetType {
-    pub fn new_cpu<S: AsRef<[usize]>>(shape: S, data: Vec<EType>) -> Result<ArrayData<EType>, TensoriaError> {
-        Ok(ArrayData::CPUArray(ArrayD::from_shape_vec(shape.as_ref(), data).map_err(|_| TensoriaError::CannotReshapeError {})?))
-    }
-
-    pub fn new_gpu<S: AsRef<[usize]>>(shape: S, data: Vec<EType>) -> Result<ArrayData<EType>, TensoriaError> {
-        let len = shape.as_ref().iter().fold(1, |x, y| x * y);
-        if len != data.len() { return Err(TensoriaError::CannotReshapeError {}); }
-        Ok(ArrayData::GPUArray(GPUArray::new(data, shape.as_ref().to_vec())))
-    }
-}
-
-impl<EType> ArrayData<EType>
-    where
-        EType: ArithmeticOps + Clone + Pod + Default + Debug,
-        Vec<EType>: GetType {
-    fn arr_add(&self, other: &ArrayData<EType>) -> ArrayData<EType> {
-        match (self, other) {
-            (ArrayData::CPUArray(ldata), ArrayData::CPUArray(rdata)) => {
-                ArrayData::CPUArray(ldata + rdata)
-            }
-            (ArrayData::GPUArray(ldata_gpu), ArrayData::GPUArray(rdata_gpu)) => {
-                ArrayData::GPUArray(ldata_gpu.add(rdata_gpu))
-            }
-            _ => panic!("cannot add tensors from different device")
-        }
-    }
-    fn arr_mul(&self, other: &ArrayData<EType>) -> ArrayData<EType> {
-        match (self, other) {
-            (ArrayData::CPUArray(ldata), ArrayData::CPUArray(rdata)) => {
-                ArrayData::CPUArray(ldata * rdata)
-            }
-            (ArrayData::GPUArray(_ldata_gpu), ArrayData::GPUArray(_rdata_gpu)) => {
-                // ArrayData::GPUArray(ldata_gpu.mul(rdata_gpu))
-                todo!("arr_mul not implemented yet")
-            }
-            _ => panic!("cannot add tensors from different device")
-        }
-    }
-}
 
 pub struct TensorPointer<EType> {
     data: ArrayData<EType>,
@@ -88,7 +25,7 @@ pub struct Tensor<EType> {
     requires_grad: bool,
 }
 
-type BackwardFn<EType> = fn(&Vec<Arc<RwLock<TensorPointer<EType>>>>, &Arc<RwLock<TensorPointer<EType>>>);
+type BinOpFn<EType> = fn(lhs: &ArrayData<EType>, rhs: &ArrayData<EType>) -> ArrayData<EType>;
 type GradFn<EType> = fn(old_grad: &ArrayData<EType>, parent_grad: &ArrayData<EType>, parent: &Arc<RwLock<TensorPointer<EType>>>) -> ArrayData<EType>;
 
 impl<EType> Tensor<EType>
@@ -245,21 +182,37 @@ impl<EType> Tensor<EType>
         Vec<EType>: GetType {
     pub fn tensor_add(&self, other: &Tensor<EType>) -> Self {
         let lgf: Option<GradFn<EType>> = Some(|lg, og, _| {
-            lg.arr_add(og)
+            lg.add(og)
         });
         let rgf: Option<GradFn<EType>> = Some(|rg, og, _| {
-            rg.arr_add(og)
+            rg.add(og)
         });
-        self.tensor_binop(other, lgf, rgf)
+        let add_fn: BinOpFn<EType> = |a, b| { a.add(&b) };
+        self.tensor_binop(other, add_fn, lgf, rgf)
     }
 
-    pub fn tensor_binop(&self, other: &Tensor<EType>, l_grad_fn: Option<GradFn<EType>>, r_grad_fn: Option<GradFn<EType>>) -> Self {
+    pub fn tensor_mul(&self, other: &Tensor<EType>) -> Self {
+        let lgf: Option<GradFn<EType>> = Some(|lg, og, parent| {
+            let parent = &parent.read().unwrap();
+            let rhs = &parent.deps[1].read().unwrap().data;
+            lg.add(&rhs.mul(&og))
+        });
+        let rgf: Option<GradFn<EType>> = Some(|rg, og, parent| {
+            let parent = &parent.read().unwrap();
+            let lhs = &parent.deps[0].read().unwrap().data;
+            rg.add(&lhs.mul(&og))
+        });
+        let mul_fn: BinOpFn<EType> = |a, b| { a.mul(&b) };
+        self.tensor_binop(other, mul_fn, lgf, rgf)
+    }
+
+    pub fn tensor_binop(&self, other: &Tensor<EType>, binop_fn: BinOpFn<EType>, l_grad_fn: Option<GradFn<EType>>, r_grad_fn: Option<GradFn<EType>>) -> Self {
         self.tp.write().unwrap().grad_fn = l_grad_fn;
         other.tp.write().unwrap().grad_fn = r_grad_fn;
 
         let ldata = &self.tp.read().unwrap().data;
         let rdata = &other.tp.read().unwrap().data;
-        let res_data = ldata.arr_add(rdata);
+        let res_data = binop_fn(ldata, rdata);
 
         let requires_grad = self.requires_grad || other.requires_grad;
 
@@ -286,8 +239,20 @@ impl<EType> Add for &Tensor<EType>
     }
 }
 
+impl<EType> Mul for &Tensor<EType>
+    where EType: ArithmeticOps + Clone + Pod + Default + Debug, Vec<EType>: GetType {
+    type Output = Tensor<EType>;
+
+    fn mul(self, rhs: Self) -> Self::Output {
+        self.tensor_mul(rhs)
+    }
+}
+
+
 #[cfg(test)]
 mod test {
+    use std::ops::Mul;
+
     use crate::error::TensoriaError;
     use crate::tensor::{ArrayData, Device, Tensor};
 
@@ -316,6 +281,25 @@ mod test {
         let res_gpu = (&x + &y).data();
         assert_eq!(x.device(), Device::GPU);
         assert_eq!(res_cpu, res_gpu);
+
+        Ok(())
+    }
+
+    #[test]
+    fn mul() -> Result<(), TensoriaError> {
+        let mut x = Tensor::new([2, 2], vec![1, 2, 3, 4])?;
+        x.set_requires_grad(true);
+
+        let y = Tensor::new([2, 2], vec![2, 3, 4, 5])?;
+        let res = x.mul(&y);
+
+        res.backward()?;
+        assert_eq!(x.grad().unwrap(), vec![2, 3, 4, 5]);
+
+        let mut x = Tensor::new([2, 2], vec![1, 2, 3, 4])?;
+        x.set_requires_grad(true);
+        (&(&x * &x) * &x).backward()?;
+        assert_eq!(x.grad().unwrap(), vec![3, 12, 27, 48]);
 
         Ok(())
     }
