@@ -44,7 +44,7 @@ impl<EType> ArrayData<EType>
     pub fn clone(&self) -> Self {
         match self {
             ArrayData::CPUArray(data) => { Self::CPUArray(data.clone()) }
-            ArrayData::GPUArray(_data) => { todo!("GPUArray clone is not implemented yet") }
+            ArrayData::GPUArray(data) => { Self::GPUArray(data.clone()) }
         }
     }
 
