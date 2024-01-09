@@ -1,5 +1,5 @@
 use std::fmt::Debug;
-use std::ops::{Add, Mul, Sub};
+use std::ops::{Add, Div, Mul, Sub};
 
 use bytemuck::Pod;
 use ndarray::{ArrayD, Axis};
@@ -44,7 +44,7 @@ impl<EType> ArrayData<EType>
     pub fn clone(&self) -> Self {
         match self {
             ArrayData::CPUArray(data) => { Self::new_cpu(data.shape(), data.to_owned().into_raw_vec()).unwrap() }
-            ArrayData::GPUArray(data) => { todo!("GPUArray clone is not implemented yet") }
+            ArrayData::GPUArray(_data) => { todo!("GPUArray clone is not implemented yet") }
         }
     }
 
@@ -79,6 +79,19 @@ impl<EType> ArrayData<EType>
             _ => panic!("cannot add tensors from different device")
         }
     }
+
+    fn arr_div(&self, other: &ArrayData<EType>) -> ArrayData<EType> {
+        match (self, other) {
+            (ArrayData::CPUArray(ldata), ArrayData::CPUArray(rdata)) => {
+                ArrayData::CPUArray(ldata / rdata)
+            }
+            (ArrayData::GPUArray(_ldata), ArrayData::GPUArray(_rdata)) => {
+                todo!();
+                // ArrayData::GPUArray(ldata / rdata)
+            }
+            _ => panic!("cannot add tensors from different device")
+        }
+    }
     fn arr_mul(&self, other: &ArrayData<EType>) -> ArrayData<EType> {
         match (self, other) {
             (ArrayData::CPUArray(ldata), ArrayData::CPUArray(rdata)) => {
@@ -102,6 +115,17 @@ impl<EType> ArrayData<EType>
         }
     }
 
+    pub fn div_scalar_f32(&self, other: f32) -> ArrayData<EType> {
+        match self
+        {
+            ArrayData::CPUArray(data) => {
+                let data_scaled = data.map(|v| EType::from(v.to_f32().unwrap() / other).unwrap()).to_owned().into_raw_vec();
+                ArrayData::new_cpu(data.shape(), data_scaled).unwrap()
+            }
+            ArrayData::GPUArray(_) => { todo!() }
+        }
+    }
+
     pub fn mean(&self, axis: Option<usize>, keep_dim: bool) -> ArrayData<EType> {
         match self {
             ArrayData::CPUArray(data) => {
@@ -118,7 +142,7 @@ impl<EType> ArrayData<EType>
                     }
                 }
             }
-            ArrayData::GPUArray(data) => { todo!("sum is not implemented yet for GPUArray") }
+            ArrayData::GPUArray(_data) => { todo!("sum is not implemented yet for GPUArray") }
         }
     }
 
@@ -138,7 +162,7 @@ impl<EType> ArrayData<EType>
                     }
                 }
             }
-            ArrayData::GPUArray(data) => { todo!("sum is not implemented yet for GPUArray") }
+            ArrayData::GPUArray(_data) => { todo!("sum is not implemented yet for GPUArray") }
         }
     }
 }
@@ -151,6 +175,17 @@ impl<EType> Add for &ArrayData<EType>
 
     fn add(self, rhs: Self) -> Self::Output {
         self.arr_add(&rhs)
+    }
+}
+
+impl<EType> Div for &ArrayData<EType>
+    where
+        EType: ArithmeticOps + Clone + Pod + Default + Debug,
+        Vec<EType>: GetType {
+    type Output = ArrayData<EType>;
+
+    fn div(self, rhs: Self) -> Self::Output {
+        self.arr_div(&rhs)
     }
 }
 

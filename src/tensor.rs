@@ -1,5 +1,5 @@
 use std::fmt::Debug;
-use std::ops::{Add, Mul, Sub};
+use std::ops::{Add, Div, Mul, Sub};
 use std::sync::{Arc, RwLock};
 
 use bytemuck::Pod;
@@ -37,6 +37,18 @@ impl<EType> Tensor<EType>
         let tp = Arc::new(RwLock::new(
             TensorPointer {
                 data: ArrayData::new_cpu(shape, data)?,
+                grad: None,
+                grad_fn: None,
+                deps: Default::default(),
+            }
+        ));
+        return Ok(Self { id: Uuid::new_v4(), tp, requires_grad: false });
+    }
+
+    pub fn new_gpu<S: AsRef<[usize]>>(shape: S, data: Vec<EType>) -> Result<Tensor<EType>, TensoriaError> {
+        let tp = Arc::new(RwLock::new(
+            TensorPointer {
+                data: ArrayData::new_gpu(shape, data)?,
                 grad: None,
                 grad_fn: None,
                 deps: Default::default(),
@@ -93,10 +105,14 @@ impl<EType> Tensor<EType>
         }
     }
 
+    pub fn zero_grad(&mut self) {
+        if self.requires_grad {
+            self.set_requires_grad(true)
+        }
+    }
     pub fn set_requires_grad(&mut self, val: bool) {
         self.requires_grad = val;
         if val {
-            // let zero_grad = Self::zeros([2]);
             let shape = self.shape();
             let numel = shape.iter().fold(1, |x, y| x * y);
             let zeros = vec![EType::default(); numel];
@@ -172,9 +188,8 @@ impl<EType> Tensor<EType>
     where
         EType: ArithmeticOps + Clone + Pod + Default + Debug,
         Vec<EType>: GetType {
-    pub fn zeros<Shape: AsRef<[usize]>>(shape: Shape) -> Self {
-        let len = shape.as_ref().iter().fold(1, |x, y| x * y);
-        Self::new(shape, vec![EType::default(); len]).unwrap()
+    pub fn zeros<Shape: AsRef<[usize]>>(_shape: Shape) -> Self {
+        todo!()
     }
 }
 
@@ -232,6 +247,17 @@ impl<EType> Tensor<EType>
         self.tensor_binop(other, mul_fn, lgf, rgf)
     }
 
+    pub fn tensor_div(&self, other: &Tensor<EType>) -> Self {
+        let lgf: Option<GradFn<EType>> = Some(|_lg, _og, _parent| {
+            todo!()
+        });
+        let rgf: Option<GradFn<EType>> = Some(|_rg, _og, _parent| {
+            todo!()
+        });
+        let div_fn: BinOpFn<EType> = Box::new(|a, b| { a.div(b) });
+        self.tensor_binop(other, div_fn, lgf, rgf)
+    }
+
     pub fn tensor_sub(&self, other: &Tensor<EType>) -> Self {
         let lgf: Option<GradFn<EType>> = Some(|lg, og, _| {
             let og = gradient_broadcasting(lg, og);
@@ -250,10 +276,35 @@ impl<EType> Tensor<EType>
             data.mean(axis, keep_dim)
         });
 
-        let gf: Option<GradFn<EType>> = Some(|g, og, _| {
-            todo!()
+        let gf: Option<GradFn<EType>> = Some(move |g, og, parent| {
+            let shape = g.shape();
+
+            // Get axis data, that is the second dependency of the parent, i.e., deps[1].
+            // it will be -1 if no axis is specified and greater than or equals to zero otherwise.
+            let axis = match &parent.read().unwrap().deps[1].read().unwrap().data {
+                ArrayData::CPUArray(ax) => { ax.first().unwrap().to_owned() }
+                ArrayData::GPUArray(ax) => { ax.data()[0] }
+            };
+
+            let numel = if axis > EType::from(-1).unwrap() {
+                shape[axis.to_usize().unwrap()]
+            } else {
+                g.shape().iter().fold(1, |x, y| x * y)
+            };
+            let og_mean: ArrayData<EType> = og.div_scalar_f32(numel as f32);
+            let og_mean_broadcast = gradient_broadcasting(g, &og_mean);
+            g.add(&og_mean_broadcast)
         });
-        self.tensor_unop(mean_fn, gf)
+        let res = self.tensor_unop(mean_fn, gf);
+
+        // Hacky way to pass axis info to tensor's dependency, since GradFn is a function (not a closure)
+        // and we want to avoid capturing outer scope of `gf`.
+        let t_axis = match axis {
+            None => { Self::new([1], vec![EType::from(-1).unwrap()]) }
+            Some(axis) => { Self::new([1], vec![EType::from(axis).unwrap()]) }
+        }.unwrap();
+        res.tp.write().unwrap().deps.push(t_axis.tp);
+        res
     }
 
     fn sum(&self, axis: Option<usize>, keep_dim: bool) -> Self {
@@ -261,7 +312,7 @@ impl<EType> Tensor<EType>
             data.sum(axis, keep_dim)
         });
 
-        let gf: Option<GradFn<EType>> = Some(|g, og, _| {
+        let gf: Option<GradFn<EType>> = Some(|_g, _og, _| {
             todo!()
         });
         self.tensor_unop(sum_fn, gf)
@@ -328,6 +379,16 @@ impl<EType> Add for &Tensor<EType>
     }
 }
 
+impl<EType> Div for &Tensor<EType>
+    where EType: ArithmeticOps + Clone + Pod + Default + Debug, Vec<EType>: GetType {
+    type Output = Tensor<EType>;
+
+    fn div(self, rhs: Self) -> Self::Output {
+        self.tensor_div(rhs)
+    }
+}
+
+
 impl<EType> Mul for &Tensor<EType>
     where EType: ArithmeticOps + Clone + Pod + Default + Debug, Vec<EType>: GetType {
     type Output = Tensor<EType>;
@@ -379,6 +440,19 @@ mod test {
     }
 
     #[test]
+    fn div() -> Result<(), TensoriaError> {
+        let x = Tensor::new([2, 2], vec![1., 2., 3., 4.])?;
+        let mut y = Tensor::new([2], vec![1., 2.])?;
+        y.set_requires_grad(true);
+        let res = &x / &y;
+        assert_eq!(res.data(), vec![1., 1., 3., 2.]);
+        res.backward()?;
+        assert_eq!(y.grad(), Some(vec![2., 2.]));
+        Ok(())
+    }
+
+
+    #[test]
     fn sub() -> Result<(), TensoriaError> {
         let x = Tensor::new([1, 2], vec![1., 2.])?.to_gpu()?;
         let y = Tensor::new([1, 2], vec![3., 4.])?.to_gpu()?;
@@ -399,11 +473,15 @@ mod test {
         Ok(())
     }
 
+    #[test]
     fn sub_gpu() -> Result<(), TensoriaError> {
         let x = Tensor::new([2], vec![1., 2.])?.to_gpu()?;
-        let y = Tensor::new([2, 1], vec![1., 2.])?.to_gpu()?;
-        let res_gpu = (&x - &y).data();
+        let mut y = Tensor::new([2, 1], vec![1., 2.])?.to_gpu()?;
+        y.set_requires_grad(true);
+        let res_gpu = &x - &y;
+        res_gpu.backward()?;
         assert_eq!(x.device(), Device::GPU);
+        assert_eq!(y.grad(), Some(vec![-1., -1., -1.]));
 
         Ok(())
     }
@@ -434,6 +512,33 @@ mod test {
         assert_eq!(x.grad().unwrap(), vec![3, 12, 27, 48]);
         Ok(())
     }
+
+    #[test]
+    fn mean() -> Result<(), TensoriaError> {
+        let mut x = Tensor::new([3], vec![4., 2., 3.])?;
+        x.set_requires_grad(true);
+        let res = x.mean(None, false);
+        res.backward()?;
+        assert_eq!(res.data(), vec![3.]);
+        assert_eq!(x.grad(), Some(vec![1. / 3., 1. / 3., 1. / 3.]));
+
+        let mut x = Tensor::new([2, 3], vec![2., 2., 2., 2., 2., 2.])?;
+        x.set_requires_grad(true);
+        let res = x.mean(Some(0), true);
+        res.backward()?;
+        assert_eq!(res.shape(), vec![1, 3]);
+        assert_eq!(x.grad(), Some(vec![0.5; 6]));
+
+        x.zero_grad();
+        let res = x.mean(Some(1), true);
+        res.backward()?;
+        assert_eq!(x.grad(), Some(vec![1. / 3.; 6]));
+
+        Ok(())
+    }
+
+    #[test]
+    fn mean_gpu() {}
 
     #[test]
     fn requires_grad() {
