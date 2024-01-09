@@ -40,7 +40,6 @@ impl GetType for Vec<i32> {
     }
 }
 
-
 impl GPUDataType {
     pub fn wgsl_type(&self) -> String {
         let dtype = match self {
@@ -65,7 +64,9 @@ pub struct GPUArray<T> {
 }
 
 impl<T: Default + Clone + Pod + Default + Debug> Clone for GPUArray<T>
-    where Vec<T>: GetType {
+    where
+        Vec<T>: GetType,
+{
     fn clone(&self) -> Self {
         if let Some(init_data) = &self.init_data {
             let mut arr = GPUArray::new(init_data.clone(), self.shape.clone());
@@ -129,12 +130,20 @@ pub fn compute_broadcasted_shape_and_strides(
 
     for (i, &dim) in shape1.iter().rev().enumerate() {
         adjusted_shape1[length - 1 - i] = dim;
-        adjusted_strides1[length - 1 - i] = if dim == 1 { 0 } else { strides1[shape1.len() - 1 - i] };
+        adjusted_strides1[length - 1 - i] = if dim == 1 {
+            0
+        } else {
+            strides1[shape1.len() - 1 - i]
+        };
     }
 
     for (i, &dim) in shape2.iter().rev().enumerate() {
         adjusted_shape2[length - 1 - i] = dim;
-        adjusted_strides2[length - 1 - i] = if dim == 1 { 0 } else { strides2[shape2.len() - 1 - i] };
+        adjusted_strides2[length - 1 - i] = if dim == 1 {
+            0
+        } else {
+            strides2[shape2.len() - 1 - i]
+        };
     }
 
     for i in 0..length {
@@ -151,10 +160,18 @@ pub fn compute_broadcasted_shape_and_strides(
         }
     }
 
-    (adjusted_shape1, adjusted_shape2, adjusted_strides1, adjusted_strides2)
+    (
+        adjusted_shape1,
+        adjusted_shape2,
+        adjusted_strides1,
+        adjusted_strides2,
+    )
 }
 
-impl<T: Clone + Pod + Default + Debug> GPUArray<T> where Vec<T>: GetType {
+impl<T: Clone + Pod + Default + Debug> GPUArray<T>
+    where
+        Vec<T>: GetType,
+{
     pub fn new(data: Vec<T>, shape: Vec<usize>) -> Self {
         Self::new_with_ctx(&GLOBAL_CTX, data, shape)
     }
@@ -170,12 +187,8 @@ impl<T: Clone + Pod + Default + Debug> GPUArray<T> where Vec<T>: GetType {
             Some(&data),
             &shape,
         );
-        let staging_buf = create_staging_buf::<T>(
-            &context.executor.read().unwrap().device,
-            &id,
-            &None,
-            &shape,
-        );
+        let staging_buf =
+            create_staging_buf::<T>(&context.executor.read().unwrap().device, &id, &None, &shape);
 
         let dtype = data.get_type();
         Self {
@@ -192,16 +205,18 @@ impl<T: Clone + Pod + Default + Debug> GPUArray<T> where Vec<T>: GetType {
         }
     }
 
-    // pub fn add(&self, other: &GPUArray<T>) -> GPUArray<T> {
-    //     self.bin_op_broadcast(other, Add {})
-    // }
-    //
-    // pub fn mul(&self, other: &GPUArray<T>) -> GPUArray<T> {
-    //     self.bin_op_broadcast(other, Mul {})
-    // }
-
     pub fn matmul(&self, other: &GPUArray<T>) -> GPUArray<T> {
         self.bin_op_broadcast(other, MatMul {})
+    }
+
+    pub fn slice<I: AsRef<[u32]>>(&self, axis: usize, indices: I) {
+        let buf_binding_0 = &self.main_buffer;
+        let buf_binding_1 = &create_storage_buf::<u32>(
+            &self.executor.read().unwrap().device,
+            "",
+            Some(&indices.as_ref().to_vec()),
+            &vec![indices.as_ref().len()],
+        );
     }
 
     pub fn bin_op_broadcast<S: Shader>(&self, other: &GPUArray<T>, op_type: S) -> GPUArray<T> {
@@ -212,17 +227,42 @@ impl<T: Clone + Pod + Default + Debug> GPUArray<T> where Vec<T>: GetType {
         let res_id = Uuid::new_v4().to_string();
         self.executor.write().unwrap().synced = false;
 
-        let (res_shape, _, _, _) = compute_broadcasted_shape_and_strides(&self.shape, &other.shape, &self.strides, &other.strides);
+        let (res_shape, _, _, _) = compute_broadcasted_shape_and_strides(
+            &self.shape,
+            &other.shape,
+            &self.strides,
+            &other.strides,
+        );
         let res_strides = shape_to_strides(&res_shape);
         let (res_storage_buf, staging_buf) = match &self.data_type {
             GPUDataType::F32 => {
-                let storage_buf = create_storage_buf::<f32>(&self.executor.read().unwrap().device, &res_id, None, &res_shape);
-                let staging_buf = create_staging_buf::<f32>(&self.executor.read().unwrap().device, &res_id, &None, &res_shape);
+                let storage_buf = create_storage_buf::<f32>(
+                    &self.executor.read().unwrap().device,
+                    &res_id,
+                    None,
+                    &res_shape,
+                );
+                let staging_buf = create_staging_buf::<f32>(
+                    &self.executor.read().unwrap().device,
+                    &res_id,
+                    &None,
+                    &res_shape,
+                );
                 (storage_buf, staging_buf)
             }
             GPUDataType::I32 => {
-                let storage_buf = create_storage_buf::<i32>(&self.executor.read().unwrap().device, &res_id, None, &res_shape);
-                let staging_buf = create_staging_buf::<i32>(&self.executor.read().unwrap().device, &res_id, &None, &res_shape);
+                let storage_buf = create_storage_buf::<i32>(
+                    &self.executor.read().unwrap().device,
+                    &res_id,
+                    None,
+                    &res_shape,
+                );
+                let staging_buf = create_staging_buf::<i32>(
+                    &self.executor.read().unwrap().device,
+                    &res_id,
+                    &None,
+                    &res_shape,
+                );
                 (storage_buf, staging_buf)
             }
         };
@@ -391,7 +431,9 @@ impl<T: Clone + Pod + Default + Debug> GPUArray<T> where Vec<T>: GetType {
 macro_rules! impl_bin_op {
     ($trait:ident, $method:ident, $op:expr) => {
         impl<T: Clone + Pod + Default + Debug> std::ops::$trait<&Self> for GPUArray<T>
-        where Vec<T>: GetType {
+        where
+            Vec<T>: GetType,
+        {
             type Output = GPUArray<T>;
 
             fn $method(self, rhs: &Self) -> Self::Output {
@@ -400,7 +442,9 @@ macro_rules! impl_bin_op {
         }
 
         impl<T: Clone + Pod + Default + Debug> std::ops::$trait for &GPUArray<T>
-        where Vec<T>: GetType {
+        where
+            Vec<T>: GetType,
+        {
             type Output = GPUArray<T>;
 
             fn $method(self, rhs: Self) -> Self::Output {
@@ -410,10 +454,9 @@ macro_rules! impl_bin_op {
     };
 }
 
-impl_bin_op!(Mul, mul, crate::gpu::op_type::Mul{});
-impl_bin_op!(Add, add, crate::gpu::op_type::Add{});
-impl_bin_op!(Sub, sub, crate::gpu::op_type::Sub{});
-
+impl_bin_op!(Mul, mul, crate::gpu::op_type::Mul {});
+impl_bin_op!(Add, add, crate::gpu::op_type::Add {});
+impl_bin_op!(Sub, sub, crate::gpu::op_type::Sub {});
 
 pub fn create_storage_buf<'a, T: bytemuck::Pod + Default + Debug>(
     device: &wgpu::Device,
@@ -514,7 +557,10 @@ mod test {
         let x = GPUArray::new_with_ctx(&ctx, vec![1., 2., 3.], vec![3]);
         let y = GPUArray::new_with_ctx(&ctx, vec![1., 2., 3.], vec![3, 1]);
         let res = x + &y;
-        assert_eq!(res.data(), vec![2.0, 3.0, 4.0, 3.0, 4.0, 5.0, 4.0, 5.0, 6.0]);
+        assert_eq!(
+            res.data(),
+            vec![2.0, 3.0, 4.0, 3.0, 4.0, 5.0, 4.0, 5.0, 6.0]
+        );
     }
 
     #[test]
