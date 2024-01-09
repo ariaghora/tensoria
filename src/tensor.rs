@@ -131,7 +131,13 @@ impl<EType> Tensor<EType>
         }
     }
 
-    pub fn data(&self) -> Vec<EType> {
+    /// Fetch ArrayData<EType> with device type corresponding to Self. This method
+    /// performs data copy.
+    pub fn data(&self) -> ArrayData<EType> {
+        self.tp.read().unwrap().data.clone()
+    }
+
+    pub fn to_vec(&self) -> Vec<EType> {
         let data_ref = &self.tp.read().unwrap().data;
         match data_ref {
             ArrayData::CPUArray(data) => { data.to_owned().into_raw_vec() }
@@ -143,7 +149,14 @@ impl<EType> Tensor<EType>
         self.tp.read().unwrap().data.device()
     }
 
-    pub fn grad(&self) -> Option<Vec<EType>> {
+    pub fn grad(&self) -> Option<ArrayData<EType>> {
+        match &self.tp.read().unwrap().grad {
+            None => { None }
+            Some(data) => { Some(data.clone()) }
+        }
+    }
+
+    pub fn grad_vec(&self) -> Option<Vec<EType>> {
         let data_ref = &self.tp.read().unwrap().grad;
         match data_ref {
             None => { None }
@@ -182,6 +195,11 @@ impl<EType> Tensor<EType>
         };
         res
     }
+
+    pub fn update_data<F: Fn(&ArrayData<EType>) -> ArrayData<EType>>(&self, update_fn: F) {
+        let new_data = update_fn(&self.tp.read().unwrap().data);
+        self.tp.write().unwrap().data = new_data;
+    }
 }
 
 impl<EType> Tensor<EType>
@@ -193,25 +211,6 @@ impl<EType> Tensor<EType>
     }
 }
 
-fn gradient_broadcasting<EType>(self_grad: &ArrayData<EType>, out_grad: &ArrayData<EType>) -> ArrayData<EType>
-    where
-        EType: TensoriaOps + Clone + Pod + Default + Debug,
-        Vec<EType>: GetType {
-    // Sum out added dims
-    let mut out_grad = out_grad.clone();
-    let ndims_added = out_grad.ndim() - self_grad.ndim();
-    for _ in 0..ndims_added {
-        out_grad = out_grad.sum(Some(0), false);
-    }
-
-    // Sum across broadcasted but non-added dims
-    for (i, dim) in self_grad.shape().iter().enumerate() {
-        if dim == &1 {
-            out_grad = out_grad.sum(Some(i), true);
-        }
-    }
-    out_grad
-}
 
 impl<EType> Tensor<EType>
     where
@@ -384,6 +383,26 @@ impl<EType> Tensor<EType>
     }
 }
 
+fn gradient_broadcasting<EType>(self_grad: &ArrayData<EType>, out_grad: &ArrayData<EType>) -> ArrayData<EType>
+    where
+        EType: TensoriaOps + Clone + Pod + Default + Debug,
+        Vec<EType>: GetType {
+    // Sum out added dims
+    let mut out_grad = out_grad.clone();
+    let ndims_added = out_grad.ndim() - self_grad.ndim();
+    for _ in 0..ndims_added {
+        out_grad = out_grad.sum(Some(0), false);
+    }
+
+    // Sum across broadcasted but non-added dims
+    for (i, dim) in self_grad.shape().iter().enumerate() {
+        if dim == &1 {
+            out_grad = out_grad.sum(Some(i), true);
+        }
+    }
+    out_grad
+}
+
 impl<EType> Add for &Tensor<EType>
     where EType: TensoriaOps + Clone + Pod + Default + Debug, Vec<EType>: GetType {
     type Output = Tensor<EType>;
@@ -436,7 +455,7 @@ mod test {
         let mut y = Tensor::new([2], vec![1., 1.])?;
         y.set_requires_grad(true);
         (&x + &y).backward()?;
-        assert_eq!(y.grad(), Some(vec![2., 2.]));
+        assert_eq!(y.grad_vec(), Some(vec![2., 2.]));
         Ok(())
     }
 
@@ -447,9 +466,9 @@ mod test {
         y.set_requires_grad(true);
 
         let res = &x + &y;
-        assert_eq!(res.data(), vec![4., 6.]);
+        assert_eq!(res.to_vec(), vec![4., 6.]);
         res.backward()?;
-        assert_eq!(y.grad(), Some(vec![1., 1.]));
+        assert_eq!(y.grad_vec(), Some(vec![1., 1.]));
         Ok(())
     }
 
@@ -459,9 +478,9 @@ mod test {
         let mut y = Tensor::new([2], vec![1., 2.])?;
         y.set_requires_grad(true);
         let res = &x / &y;
-        assert_eq!(res.data(), vec![1., 1., 3., 2.]);
+        assert_eq!(res.to_vec(), vec![1., 1., 3., 2.]);
         res.backward()?;
-        assert_eq!(y.grad(), Some(vec![2., 2.]));
+        assert_eq!(y.grad_vec(), Some(vec![2., 2.]));
         Ok(())
     }
 
@@ -471,16 +490,16 @@ mod test {
         let x = Tensor::new([1, 2], vec![1., 2.])?.to_gpu()?;
         let y = Tensor::new([1, 2], vec![3., 4.])?.to_gpu()?;
         let res = &x - &y;
-        assert_eq!(res.data(), vec![-2., -2.]);
+        assert_eq!(res.to_vec(), vec![-2., -2.]);
 
         let x = Tensor::new([2], vec![1., 2.])?;
         let y = Tensor::new([2, 1], vec![1., 2.])?;
-        let res_cpu = (&x - &y).data();
+        let res_cpu = (&x - &y).to_vec();
         assert_eq!(x.device(), Device::CPU);
 
         let x = Tensor::new([2], vec![1., 2.])?.to_gpu()?;
         let y = Tensor::new([2, 1], vec![1., 2.])?.to_gpu()?;
-        let res_gpu = (&x - &y).data();
+        let res_gpu = (&x - &y).to_vec();
         assert_eq!(x.device(), Device::GPU);
         assert_eq!(res_cpu, res_gpu);
 
@@ -495,7 +514,7 @@ mod test {
         let res_gpu = &x - &y;
         res_gpu.backward()?;
         assert_eq!(x.device(), Device::GPU);
-        assert_eq!(y.grad(), Some(vec![-1., -1., -1.]));
+        assert_eq!(y.grad_vec(), Some(vec![-1., -1., -1.]));
 
         Ok(())
     }
@@ -509,7 +528,7 @@ mod test {
         let res = x.mul(&y);
 
         res.backward()?;
-        assert_eq!(x.grad().unwrap(), vec![2, 3, 4, 5]);
+        assert_eq!(x.grad_vec().unwrap(), vec![2, 3, 4, 5]);
         Ok(())
     }
 
@@ -518,12 +537,12 @@ mod test {
         let mut x = Tensor::new([2, 2], vec![1, 2, 3, 4])?;
         x.set_requires_grad(true);
         (&(&x * &x) * &x).backward()?;
-        assert_eq!(x.grad().unwrap(), vec![3, 12, 27, 48]);
+        assert_eq!(x.grad_vec().unwrap(), vec![3, 12, 27, 48]);
 
         let mut x = Tensor::new([2, 2], vec![1, 2, 3, 4])?.to_gpu()?;
         x.set_requires_grad(true);
         (&(&x * &x) * &x).backward()?;
-        assert_eq!(x.grad().unwrap(), vec![3, 12, 27, 48]);
+        assert_eq!(x.grad_vec().unwrap(), vec![3, 12, 27, 48]);
         Ok(())
     }
 
@@ -536,11 +555,11 @@ mod test {
         y.set_requires_grad(true);
 
         let res = x.matmul(&y);
-        assert_eq!(res.data(), vec![5, 11]);
+        assert_eq!(res.to_vec(), vec![5, 11]);
 
         res.backward()?;
-        assert_eq!(x.grad(), Some(vec![1, 2, 1, 2]));
-        assert_eq!(y.grad(), Some(vec![4, 6]));
+        assert_eq!(x.grad_vec(), Some(vec![1, 2, 1, 2]));
+        assert_eq!(y.grad_vec(), Some(vec![4, 6]));
         Ok(())
     }
 
@@ -551,20 +570,20 @@ mod test {
         x.set_requires_grad(true);
         let res = x.mean(None, false);
         res.backward()?;
-        assert_eq!(res.data(), vec![3.]);
-        assert_eq!(x.grad(), Some(vec![1. / 3., 1. / 3., 1. / 3.]));
+        assert_eq!(res.to_vec(), vec![3.]);
+        assert_eq!(x.grad_vec(), Some(vec![1. / 3., 1. / 3., 1. / 3.]));
 
         let mut x = Tensor::new([2, 3], vec![2., 2., 2., 2., 2., 2.])?;
         x.set_requires_grad(true);
         let res = x.mean(Some(0), true);
         res.backward()?;
         assert_eq!(res.shape(), vec![1, 3]);
-        assert_eq!(x.grad(), Some(vec![0.5; 6]));
+        assert_eq!(x.grad_vec(), Some(vec![0.5; 6]));
 
         x.zero_grad();
         let res = x.mean(Some(1), true);
         res.backward()?;
-        assert_eq!(x.grad(), Some(vec![1. / 3.; 6]));
+        assert_eq!(x.grad_vec(), Some(vec![1. / 3.; 6]));
 
         Ok(())
     }

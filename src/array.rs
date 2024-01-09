@@ -172,6 +172,13 @@ impl<EType> ArrayData<EType>
         }
     }
 
+    pub fn scale(&self, v: EType) -> ArrayData<EType> {
+        match self {
+            ArrayData::CPUArray(data) => { Self::CPUArray(data.map(|item| *item * v)) }
+            ArrayData::GPUArray(_) => { todo!() }
+        }
+    }
+
     pub fn sum(&self, axis: Option<usize>, keep_dim: bool) -> ArrayData<EType> {
         match self {
             ArrayData::CPUArray(data) => {
