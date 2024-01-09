@@ -8,7 +8,7 @@ use uuid::Uuid;
 use crate::array::{ArrayData, Device};
 use crate::error::TensoriaError;
 use crate::gpu::gpu_array::GetType;
-use crate::traits::ArithmeticOps;
+use crate::traits::TensoriaOps;
 
 pub struct TensorPointer<EType> {
     data: ArrayData<EType>,
@@ -31,7 +31,7 @@ type GradFn<EType> = fn(old_grad: &ArrayData<EType>, parent_grad: &ArrayData<ETy
 
 impl<EType> Tensor<EType>
     where
-        EType: ArithmeticOps + Clone + Pod + Default + Debug,
+        EType: TensoriaOps + Clone + Pod + Default + Debug,
         Vec<EType>: GetType {
     pub fn new<S: AsRef<[usize]>>(shape: S, data: Vec<EType>) -> Result<Tensor<EType>, TensoriaError> {
         let tp = Arc::new(RwLock::new(
@@ -186,7 +186,7 @@ impl<EType> Tensor<EType>
 
 impl<EType> Tensor<EType>
     where
-        EType: ArithmeticOps + Clone + Pod + Default + Debug,
+        EType: TensoriaOps + Clone + Pod + Default + Debug,
         Vec<EType>: GetType {
     pub fn zeros<Shape: AsRef<[usize]>>(_shape: Shape) -> Self {
         todo!()
@@ -195,7 +195,7 @@ impl<EType> Tensor<EType>
 
 fn gradient_broadcasting<EType>(self_grad: &ArrayData<EType>, out_grad: &ArrayData<EType>) -> ArrayData<EType>
     where
-        EType: ArithmeticOps + Clone + Pod + Default + Debug,
+        EType: TensoriaOps + Clone + Pod + Default + Debug,
         Vec<EType>: GetType {
     // Sum out added dims
     let mut out_grad = out_grad.clone();
@@ -215,8 +215,22 @@ fn gradient_broadcasting<EType>(self_grad: &ArrayData<EType>, out_grad: &ArrayDa
 
 impl<EType> Tensor<EType>
     where
-        EType: ArithmeticOps + Clone + Pod + Default + Debug,
+        EType: TensoriaOps + Clone + Pod + Default + Debug,
         Vec<EType>: GetType {
+    pub fn matmul(&self, other: &Tensor<EType>) -> Self {
+        let lgf: Option<GradFn<EType>> = Some(|lg, og, parent| {
+            let parent = &parent.read().unwrap();
+            let rhs = &parent.deps[1].read().unwrap().data;
+            lg.add(&og.matmul(&rhs.t()))
+        });
+        let rgf: Option<GradFn<EType>> = Some(|rg, og, parent| {
+            let parent = &parent.read().unwrap();
+            let lhs = &parent.deps[0].read().unwrap().data;
+            rg.add(&lhs.t().matmul(&og))
+        });
+        let add_fn: BinOpFn<EType> = Box::new(|a, b| { a.matmul(&b) });
+        self.tensor_binop(other, add_fn, lgf, rgf)
+    }
     pub fn tensor_add(&self, other: &Tensor<EType>) -> Self {
         let lgf: Option<GradFn<EType>> = Some(|lg, og, _| {
             let og = &gradient_broadcasting(lg, og);
@@ -371,7 +385,7 @@ impl<EType> Tensor<EType>
 }
 
 impl<EType> Add for &Tensor<EType>
-    where EType: ArithmeticOps + Clone + Pod + Default + Debug, Vec<EType>: GetType {
+    where EType: TensoriaOps + Clone + Pod + Default + Debug, Vec<EType>: GetType {
     type Output = Tensor<EType>;
 
     fn add(self, rhs: Self) -> Self::Output {
@@ -380,7 +394,7 @@ impl<EType> Add for &Tensor<EType>
 }
 
 impl<EType> Div for &Tensor<EType>
-    where EType: ArithmeticOps + Clone + Pod + Default + Debug, Vec<EType>: GetType {
+    where EType: TensoriaOps + Clone + Pod + Default + Debug, Vec<EType>: GetType {
     type Output = Tensor<EType>;
 
     fn div(self, rhs: Self) -> Self::Output {
@@ -390,7 +404,7 @@ impl<EType> Div for &Tensor<EType>
 
 
 impl<EType> Mul for &Tensor<EType>
-    where EType: ArithmeticOps + Clone + Pod + Default + Debug, Vec<EType>: GetType {
+    where EType: TensoriaOps + Clone + Pod + Default + Debug, Vec<EType>: GetType {
     type Output = Tensor<EType>;
 
     fn mul(self, rhs: Self) -> Self::Output {
@@ -399,7 +413,7 @@ impl<EType> Mul for &Tensor<EType>
 }
 
 impl<EType> Sub for &Tensor<EType>
-    where EType: ArithmeticOps + Clone + Pod + Default + Debug, Vec<EType>: GetType {
+    where EType: TensoriaOps + Clone + Pod + Default + Debug, Vec<EType>: GetType {
     type Output = Tensor<EType>;
 
     fn sub(self, rhs: Self) -> Self::Output {
@@ -512,6 +526,24 @@ mod test {
         assert_eq!(x.grad().unwrap(), vec![3, 12, 27, 48]);
         Ok(())
     }
+
+    #[test]
+    fn matmul() -> Result<(), TensoriaError> {
+        let mut x = Tensor::new([2, 2], vec![1, 2, 3, 4])?;
+        x.set_requires_grad(true);
+
+        let mut y = Tensor::new([2, 1], vec![1, 2])?;
+        y.set_requires_grad(true);
+
+        let res = x.matmul(&y);
+        assert_eq!(res.data(), vec![5, 11]);
+
+        res.backward()?;
+        assert_eq!(x.grad(), Some(vec![1, 2, 1, 2]));
+        assert_eq!(y.grad(), Some(vec![4, 6]));
+        Ok(())
+    }
+
 
     #[test]
     fn mean() -> Result<(), TensoriaError> {

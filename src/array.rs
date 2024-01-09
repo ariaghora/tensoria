@@ -2,11 +2,11 @@ use std::fmt::Debug;
 use std::ops::{Add, Div, Mul, Sub};
 
 use bytemuck::Pod;
-use ndarray::{ArrayD, Axis};
+use ndarray::{ArrayD, Axis, Ix2};
 
 use crate::error::TensoriaError;
 use crate::gpu::gpu_array::{GetType, GPUArray};
-use crate::traits::ArithmeticOps;
+use crate::traits::TensoriaOps;
 
 #[derive(PartialEq, Debug)]
 pub enum Device { CPU, GPU }
@@ -29,7 +29,7 @@ impl<EType> ArrayData<EType> {
 
 impl<EType> ArrayData<EType>
     where
-        EType: ArithmeticOps + Clone + Pod + Default + Debug,
+        EType: TensoriaOps + Clone + Pod + Default + Debug,
         Vec<EType>: GetType {
     pub fn new_cpu<S: AsRef<[usize]>>(shape: S, data: Vec<EType>) -> Result<ArrayData<EType>, TensoriaError> {
         Ok(ArrayData::CPUArray(ArrayD::from_shape_vec(shape.as_ref(), data).map_err(|_| TensoriaError::CannotReshapeError {})?))
@@ -43,7 +43,7 @@ impl<EType> ArrayData<EType>
 
     pub fn clone(&self) -> Self {
         match self {
-            ArrayData::CPUArray(data) => { Self::new_cpu(data.shape(), data.to_owned().into_raw_vec()).unwrap() }
+            ArrayData::CPUArray(data) => { Self::CPUArray(data.clone()) }
             ArrayData::GPUArray(_data) => { todo!("GPUArray clone is not implemented yet") }
         }
     }
@@ -66,7 +66,7 @@ impl<EType> ArrayData<EType>
 /// Following set of implementations are related to public arithmetic functions
 impl<EType> ArrayData<EType>
     where
-        EType: ArithmeticOps + Clone + Pod + Default + Debug,
+        EType: TensoriaOps + Clone + Pod + Default + Debug,
         Vec<EType>: GetType {
     fn arr_add(&self, other: &ArrayData<EType>) -> ArrayData<EType> {
         match (self, other) {
@@ -126,6 +126,32 @@ impl<EType> ArrayData<EType>
         }
     }
 
+    pub fn matmul(&self, other: &ArrayData<EType>) -> ArrayData<EType> {
+        let l_ndim = self.ndim();
+        let r_ndim = other.ndim();
+        if (l_ndim != 2) && (r_ndim != 2) {
+            panic!("Both tensors must be of rank-2, but got rank-{} and rank-{} tensors", l_ndim, r_ndim);
+        }
+
+        let (l_shape, r_shape) = (self.shape(), other.shape());
+        if l_shape[1] != r_shape[0] {
+            panic!("Incompatible shape: {:?} and {:?}", l_shape, r_shape);
+        }
+
+        match (self, other) {
+            (ArrayData::CPUArray(ldata), ArrayData::CPUArray(rdata)) => {
+                let ldata_2d = ldata.to_owned().into_dimensionality::<Ix2>().unwrap();
+                let rdata_2d = rdata.to_owned().into_dimensionality::<Ix2>().unwrap();
+
+                ArrayData::CPUArray(ldata_2d.dot(&rdata_2d).into_dyn())
+            }
+            (ArrayData::GPUArray(ldata), ArrayData::GPUArray(rdata)) => {
+                ArrayData::GPUArray(ldata.matmul(rdata))
+            }
+            _ => panic!("cannot add tensors from different device")
+        }
+    }
+
     pub fn mean(&self, axis: Option<usize>, keep_dim: bool) -> ArrayData<EType> {
         match self {
             ArrayData::CPUArray(data) => {
@@ -165,11 +191,22 @@ impl<EType> ArrayData<EType>
             ArrayData::GPUArray(_data) => { todo!("sum is not implemented yet for GPUArray") }
         }
     }
+    pub fn t(&self) -> ArrayData<EType> {
+        if self.ndim() != 2 {
+            panic!("Can only transpose a rank-2 tensor, got rank-{}", self.ndim());
+        }
+        match self {
+            ArrayData::CPUArray(data) => {
+                ArrayData::CPUArray(data.to_owned().into_dimensionality::<Ix2>().unwrap().t().to_owned().into_dyn())
+            }
+            ArrayData::GPUArray(_) => { todo!("Transpose GPUArray is not implemented yet") }
+        }
+    }
 }
 
 impl<EType> Add for &ArrayData<EType>
     where
-        EType: ArithmeticOps + Clone + Pod + Default + Debug,
+        EType: TensoriaOps + Clone + Pod + Default + Debug,
         Vec<EType>: GetType {
     type Output = ArrayData<EType>;
 
@@ -180,7 +217,7 @@ impl<EType> Add for &ArrayData<EType>
 
 impl<EType> Div for &ArrayData<EType>
     where
-        EType: ArithmeticOps + Clone + Pod + Default + Debug,
+        EType: TensoriaOps + Clone + Pod + Default + Debug,
         Vec<EType>: GetType {
     type Output = ArrayData<EType>;
 
@@ -191,7 +228,7 @@ impl<EType> Div for &ArrayData<EType>
 
 impl<EType> Mul for &ArrayData<EType>
     where
-        EType: ArithmeticOps + Clone + Pod + Default + Debug,
+        EType: TensoriaOps + Clone + Pod + Default + Debug,
         Vec<EType>: GetType {
     type Output = ArrayData<EType>;
 
@@ -202,7 +239,7 @@ impl<EType> Mul for &ArrayData<EType>
 
 impl<EType> Sub for &ArrayData<EType>
     where
-        EType: ArithmeticOps + Clone + Pod + Default + Debug,
+        EType: TensoriaOps + Clone + Pod + Default + Debug,
         Vec<EType>: GetType {
     type Output = ArrayData<EType>;
 
