@@ -45,7 +45,9 @@ impl Executor {
             .await
             .unwrap();
 
-        let limits = wgpu::Limits::default();
+        let mut limits = wgpu::Limits::default();
+        limits.max_buffer_size = 256 << 25;
+        limits.max_storage_buffer_binding_size = 256 << 21;
 
         let features = adapter.features();
         let (device, queue) = adapter

@@ -221,7 +221,7 @@ impl<T: Clone + Pod + Default + Debug + Num + NumCast> GPUArray<T>
     }
 
     pub fn matmul(&self, other: &GPUArray<T>) -> GPUArray<T> {
-        self.bin_op_broadcast(other, MatMul {})
+        self.bin_op(other, vec![self.shape[0], other.shape[1]], MatMul {})
     }
 
     pub fn slice_axis<I: AsRef<[i32]>>(&self, axis: i32, indices: I) -> GPUArray<T> {
