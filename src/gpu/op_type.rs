@@ -84,37 +84,23 @@ fn prepare_binop_broadcast_shader<T>(operands: Vec<&GPUArray<T>>, output: &GPUAr
     (num_workgroups_x as u32, 1, 1)
 }
 
-pub struct Add {}
-
-impl Shader for Add {
-    fn shader_path(&self) -> String {
-        "binop.wgsl".into()
-    }
-
-    fn prepare<T>(&self, operands: Vec<&GPUArray<T>>, output: &GPUArray<T>, params: &mut Context) -> (u32, u32, u32) {
-        prepare_binop_broadcast_shader(operands, output, params, "out = lhs + rhs;")
-    }
+macro_rules! define_elementwise_binop {
+    ($struct_name: ident, $binop_stmt: expr) => {
+        pub struct $struct_name {}
+        impl Shader for $struct_name {
+            fn shader_path(&self) -> String { "binop.wgsl".into() }
+            fn prepare<T>(&self, operands: Vec<&GPUArray<T>>, output: &GPUArray<T>, params: &mut Context) -> (u32, u32, u32) {
+                prepare_binop_broadcast_shader(operands, output, params, $binop_stmt)
+            }
+        }
+    };
 }
 
-pub struct Mul {}
+define_elementwise_binop!(Add, "out = lhs + rhs;");
+define_elementwise_binop!(Mul, "out = lhs * rhs;");
+define_elementwise_binop!(Sub, "out = lhs - rhs;");
+define_elementwise_binop!(Div, "out = lhs / rhs;");
 
-impl Shader for Mul {
-    fn shader_path(&self) -> String { "binop.wgsl".into() }
-
-    fn prepare<T>(&self, operands: Vec<&GPUArray<T>>, output: &GPUArray<T>, params: &mut Context) -> (u32, u32, u32) {
-        prepare_binop_broadcast_shader(operands, output, params, "out = lhs * rhs;")
-    }
-}
-
-pub struct Sub {}
-
-impl Shader for Sub {
-    fn shader_path(&self) -> String { "binop.wgsl".into() }
-
-    fn prepare<T>(&self, operands: Vec<&GPUArray<T>>, output: &GPUArray<T>, params: &mut Context) -> (u32, u32, u32) {
-        prepare_binop_broadcast_shader(operands, output, params, "out = lhs - rhs;")
-    }
-}
 
 pub struct MatMul {}
 
