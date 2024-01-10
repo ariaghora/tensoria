@@ -122,7 +122,9 @@ impl<EType> ArrayData<EType>
                 let data_scaled = data.map(|v| EType::from(v.to_f32().unwrap() / other).unwrap()).to_owned().into_raw_vec();
                 ArrayData::new_cpu(data.shape(), data_scaled).unwrap()
             }
-            ArrayData::GPUArray(_) => { todo!() }
+            ArrayData::GPUArray(data) => {
+                ArrayData::GPUArray(data.div(&GPUArray::new_with_ctx(&data.context, vec![EType::from(other).unwrap()], vec![1])))
+            }
         }
     }
 
@@ -168,7 +170,16 @@ impl<EType> ArrayData<EType>
                     }
                 }
             }
-            ArrayData::GPUArray(_data) => { todo!("sum is not implemented yet for GPUArray") }
+            ArrayData::GPUArray(data) => {
+                match axis {
+                    None => {
+                        ArrayData::GPUArray(data.mean())
+                    }
+                    Some(axis) => {
+                        ArrayData::GPUArray(data.mean_axis(axis as i32, keep_dim))
+                    }
+                }
+            }
         }
     }
 
@@ -195,7 +206,16 @@ impl<EType> ArrayData<EType>
                     }
                 }
             }
-            ArrayData::GPUArray(_data) => { todo!("sum is not implemented yet for GPUArray") }
+            ArrayData::GPUArray(data) => {
+                match axis {
+                    None => {
+                        ArrayData::GPUArray(data.sum())
+                    }
+                    Some(axis) => {
+                        ArrayData::GPUArray(data.sum_axis(axis as i32, keep_dim))
+                    }
+                }
+            }
         }
     }
     pub fn t(&self) -> ArrayData<EType> {

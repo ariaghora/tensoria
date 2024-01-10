@@ -6,13 +6,13 @@ use std::sync::{Arc, RwLock};
 use bytemuck::Pod;
 use include_dir::{Dir, include_dir};
 use lazy_static::lazy_static;
-use num_traits::Num;
+use num_traits::{Num, NumCast};
 use uuid::Uuid;
 use wgpu::{BindGroupEntry, ComputePipeline};
 use wgpu::util::DeviceExt;
 
 use crate::gpu::context::{Executor, GPUContext};
-use crate::gpu::op_type::{MatMul, Shader, Slice};
+use crate::gpu::op_type::{MatMul, Mean, Shader, Slice, Sum};
 
 static PROJECT_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/gpu/wgsl/");
 
@@ -60,13 +60,13 @@ pub struct GPUArray<T> {
     init_data: Option<Vec<T>>,
     initializer: bool,
     context_id: Uuid,
-    context: GPUContext,
+    pub(crate) context: GPUContext,
     executor: Arc<RwLock<Executor>>,
     main_buffer: wgpu::Buffer,
     staging_buffer: wgpu::Buffer,
 }
 
-impl<T: Default + Clone + Pod + Default + Debug + Num> Clone for GPUArray<T>
+impl<T: Default + Clone + Pod + Default + Debug + Num + NumCast> Clone for GPUArray<T>
     where
         Vec<T>: GetType,
 {
@@ -171,7 +171,7 @@ pub fn compute_broadcasted_shape_and_strides(
     )
 }
 
-impl<T: Clone + Pod + Default + Debug + Num> GPUArray<T>
+impl<T: Clone + Pod + Default + Debug + Num + NumCast> GPUArray<T>
     where
         Vec<T>: GetType,
 {
@@ -209,6 +209,17 @@ impl<T: Clone + Pod + Default + Debug + Num> GPUArray<T>
         }
     }
 
+    pub fn mean(&self) -> GPUArray<T> {
+        self.un_op(vec![1], Mean {})
+    }
+
+    pub fn mean_axis(&self, axis: i32, keep_dim: bool) -> GPUArray<T> {
+        let res = self.sum_axis(axis, keep_dim);
+        let numel = self.shape[axis as usize];
+        let numel_arr = &Self::new_with_ctx(&self.context, vec![NumCast::from(numel).unwrap()], vec![1]);
+        res / numel_arr
+    }
+
     pub fn matmul(&self, other: &GPUArray<T>) -> GPUArray<T> {
         self.bin_op_broadcast(other, MatMul {})
     }
@@ -241,6 +252,10 @@ impl<T: Clone + Pod + Default + Debug + Num> GPUArray<T>
         );
 
         self.bin_op(&indices_arr, out_shape, Slice::new(axis))
+    }
+
+    pub fn sum(&self) -> GPUArray<T> {
+        self.un_op(vec![1], Sum {})
     }
 
     /// Sum along axis and squeeze the singleton axis when keep_dim is false.
@@ -351,6 +366,91 @@ impl<T: Clone + Pod + Default + Debug + Num> GPUArray<T>
 
         self.dispatch_compute(buffers, &shader_source, workgroup_sizes);
 
+        let encoder = &mut self.executor.write().unwrap().encoder;
+        encoder.copy_buffer_to_buffer(
+            &res_gpu.main_buffer,
+            0,
+            &res_gpu.staging_buffer,
+            0,
+            res_gpu.staging_buffer.size(),
+        );
+        res_gpu
+    }
+
+    /// General unary operation
+    pub fn un_op<S: Shader>(&self, out_shape: Vec<usize>, op_type: S) -> GPUArray<T> {
+        let res_id = Uuid::new_v4().to_string();
+        self.executor.write().unwrap().synced = false;
+        let out_strides = shape_to_strides(&out_shape);
+
+        let (res_storage_buf, staging_buf) = match &self.data_type {
+            GPUDataType::F32 => {
+                let storage_buf = create_storage_buf::<f32>(
+                    &self.executor.read().unwrap().device,
+                    &res_id,
+                    None,
+                    &out_shape,
+                );
+                let staging_buf = create_staging_buf::<f32>(
+                    &self.executor.read().unwrap().device,
+                    &res_id,
+                    &None,
+                    &out_shape,
+                );
+                (storage_buf, staging_buf)
+            }
+            GPUDataType::I32 => {
+                let storage_buf = create_storage_buf::<i32>(
+                    &self.executor.read().unwrap().device,
+                    &res_id,
+                    None,
+                    &out_shape,
+                );
+                let staging_buf = create_staging_buf::<i32>(
+                    &self.executor.read().unwrap().device,
+                    &res_id,
+                    &None,
+                    &out_shape,
+                );
+                (storage_buf, staging_buf)
+            }
+        };
+
+        let res_gpu = Self {
+            id: res_id.clone(),
+            initializer: false,
+            init_data: None,
+            context_id: self.context_id,
+            context: self.context.clone(),
+            data_type: self.data_type.clone(),
+            shape: out_shape,
+            strides: out_strides,
+            executor: Arc::clone(&self.executor),
+            main_buffer: res_storage_buf,
+            staging_buffer: staging_buf,
+        };
+
+        let buf_binding_0 = &self.main_buffer;
+        let buf_binding_1 = &res_gpu.main_buffer;
+        let buffers = vec![buf_binding_0, buf_binding_1];
+
+        let shader_template = PROJECT_DIR
+            .get_file(op_type.shader_path())
+            .unwrap()
+            .contents_utf8()
+            .unwrap();
+        let mut templ = tera::Tera::default();
+        let mut params = tera::Context::new();
+        templ
+            .add_raw_template(&op_type.shader_path(), shader_template)
+            .unwrap();
+
+        let operands = vec![self];
+        let workgroup_sizes = op_type.prepare(operands, &res_gpu, &mut params);
+
+        let shader_source = templ.render(&op_type.shader_path(), &params).unwrap();
+
+        self.dispatch_compute(buffers, &shader_source, workgroup_sizes);
         let encoder = &mut self.executor.write().unwrap().encoder;
         encoder.copy_buffer_to_buffer(
             &res_gpu.main_buffer,
@@ -500,7 +600,7 @@ impl<T: Clone + Pod + Default + Debug + Num> GPUArray<T>
 /// op(Self, &Self) and op(&Self, &Self)
 macro_rules! impl_bin_op {
     ($trait:ident, $method:ident, $op:expr) => {
-        impl<T: Clone + Pod + Default + Debug + Num> std::ops::$trait<&Self> for GPUArray<T>
+        impl<T: Clone + Pod + Default + Debug + Num + NumCast> std::ops::$trait<&Self> for GPUArray<T>
         where
             Vec<T>: GetType,
         {
@@ -511,7 +611,7 @@ macro_rules! impl_bin_op {
             }
         }
 
-        impl<T: Clone + Pod + Default + Debug + Num> std::ops::$trait for &GPUArray<T>
+        impl<T: Clone + Pod + Default + Debug + Num + NumCast> std::ops::$trait for &GPUArray<T>
         where
             Vec<T>: GetType,
         {
@@ -526,6 +626,7 @@ macro_rules! impl_bin_op {
 
 impl_bin_op!(Mul, mul, crate::gpu::op_type::Mul {});
 impl_bin_op!(Add, add, crate::gpu::op_type::Add {});
+impl_bin_op!(Div, div, crate::gpu::op_type::Div {});
 impl_bin_op!(Sub, sub, crate::gpu::op_type::Sub {});
 
 pub fn create_storage_buf<'a, T: bytemuck::Pod + Default + Debug>(
@@ -591,8 +692,6 @@ pub fn create_staging_buf<'a, T: bytemuck::Pod + Default + Debug>(
 }
 
 mod test {
-    use std::ops::Add;
-
     use crate::gpu::context::GPUContext;
     use crate::gpu::gpu_array::GPUArray;
 
@@ -617,7 +716,7 @@ mod test {
 
         let x = GPUArray::new_with_ctx(&ctx, vec![1., 2., 3., 4.], vec![2, 2]);
         let y = GPUArray::new_with_ctx(&ctx, vec![10., 10.], vec![2, 1]);
-        let res = x.add(&y);
+        let res = x + &y;
         assert_eq!(res.to_vec(), vec![11., 12., 13., 14.]);
     }
 
@@ -689,5 +788,15 @@ mod test {
         let res = x.sum_axis(1, true);
         assert_eq!(res.to_vec(), vec![4, 4, 2, 2]);
         assert_eq!(res.shape, vec![2, 1, 2]);
+
+        // all-axis sum
+        let x = GPUArray::new_with_ctx(&ctx, vec![1., 2., 3., 4.], vec![4]);
+        let res = x.sum();
+        assert_eq!(res.to_vec(), vec![10.]);
+        assert_eq!(res.shape, vec![1]);
+
+        let x = GPUArray::new_with_ctx(&ctx, vec![1; 1000000], vec![1000000]);
+        let res = x.sum();
+        assert_eq!(res.to_vec(), vec![1000000]);
     }
 }

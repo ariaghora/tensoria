@@ -325,10 +325,21 @@ impl<EType> Tensor<EType>
             data.sum(axis, keep_dim)
         });
 
-        let gf: Option<GradFn<EType>> = Some(|_g, _og, _| {
-            todo!()
+        let gf: Option<GradFn<EType>> = Some(|g, og, parent| {
+            // The gradient of sum is broadcasting the gradient back to the shape of 'g'.
+            let og_broadcast = gradient_broadcasting(g, &og);
+            g.add(&og_broadcast)
         });
-        self.tensor_unop(sum_fn, gf)
+        let res = self.tensor_unop(sum_fn, gf);
+
+        // Hacky way to pass axis info to tensor's dependency, since GradFn is a function (not a closure)
+        // and we want to avoid capturing outer scope of `gf`.
+        let t_axis = match axis {
+            None => { Self::new([1], vec![EType::from(-1).unwrap()]) }
+            Some(axis) => { Self::new([1], vec![EType::from(axis).unwrap()]) }
+        }.unwrap();
+        res.tp.write().unwrap().deps.push(t_axis.tp);
+        res
     }
 
     fn tensor_binop(
@@ -389,7 +400,7 @@ fn gradient_broadcasting<EType>(self_grad: &ArrayData<EType>, out_grad: &ArrayDa
         Vec<EType>: GetType {
     // Sum out added dims
     let mut out_grad = out_grad.clone();
-    let ndims_added = out_grad.ndim() - self_grad.ndim();
+    let ndims_added = out_grad.ndim() as i32 - self_grad.ndim() as i32;
     for _ in 0..ndims_added {
         out_grad = out_grad.sum(Some(0), false);
     }
@@ -444,10 +455,10 @@ impl<EType> Sub for &Tensor<EType>
 /// The suites are solely to test tensor's autograd mechanism
 #[cfg(test)]
 mod test {
-    use std::ops::Mul;
+    use std::ops::{Mul, Sub};
 
     use crate::error::TensoriaError;
-    use crate::tensor::{ArrayData, Device, Tensor};
+    use crate::tensor::{Device, Tensor};
 
     #[test]
     fn add() -> Result<(), TensoriaError> {
@@ -514,7 +525,13 @@ mod test {
         let res_gpu = &x - &y;
         res_gpu.backward()?;
         assert_eq!(x.device(), Device::GPU);
-        assert_eq!(y.grad_vec(), Some(vec![-1., -1., -1.]));
+        assert_eq!(y.grad_vec(), Some(vec![-2., -2.]));
+
+        let x = Tensor::new([2, 2], vec![1., 2., 3., 4.])?.to_gpu()?;
+        let mut y = Tensor::new([2, 2], vec![1., 2., 3., 4.])?.to_gpu()?;
+        y.set_requires_grad(true);
+        (x.sub(&y)).backward()?;
+        assert_eq!(y.grad_vec(), Some(vec![-1.; 4]));
 
         Ok(())
     }
@@ -589,18 +606,43 @@ mod test {
     }
 
     #[test]
-    fn mean_gpu() {}
+    fn mean_gpu() -> Result<(), TensoriaError> {
+        let mut x = Tensor::new([3], vec![4., 2., 3.])?.to_gpu()?;
+        x.set_requires_grad(true);
+        let res = x.mean(None, false);
+        res.backward()?;
+        assert_eq!(res.to_vec(), vec![3.]);
+        assert_eq!(x.grad_vec(), Some(vec![1. / 3., 1. / 3., 1. / 3.]));
+
+        let mut x = Tensor::new([2, 3], vec![2., 2., 2., 2., 2., 2.])?.to_gpu()?;
+        x.set_requires_grad(true);
+        let res = x.mean(Some(0), true);
+        res.backward()?;
+        assert_eq!(res.shape(), vec![1, 3]);
+        assert_eq!(x.grad_vec(), Some(vec![0.5; 6]));
+        
+        Ok(())
+    }
 
     #[test]
-    fn requires_grad() {
-        let mut x: Tensor<f32> = Tensor::zeros([2, 2]);
+    fn sum() -> Result<(), TensoriaError> {
+        let mut x = Tensor::new([1, 3], vec![1., 2., 3.])?;
         x.set_requires_grad(true);
+        let res = x.sum(None, false);
+        res.backward()?;
+        assert_eq!(res.shape(), vec![1]);
+        assert_eq!(x.grad_vec(), Some(vec![1.; 3]));
+        Ok(())
+    }
 
-        assert!(x.tp.read().unwrap().grad.is_some());
-        if let ArrayData::CPUArray(arr) = &x.tp.read().unwrap().grad.as_ref().unwrap() {
-            assert_eq!(arr.to_owned().into_raw_vec(), vec![0., 0., 0., 0.])
-        } else {
-            panic!("This should be CPU array")
-        };
+    #[test]
+    fn sum_gpu() -> Result<(), TensoriaError> {
+        let mut x = Tensor::new([1, 3], vec![1., 2., 3.])?.to_gpu()?;
+        x.set_requires_grad(true);
+        let res = x.sum(None, false);
+        res.backward()?;
+        assert_eq!(res.shape(), vec![1]);
+        assert_eq!(x.grad_vec(), Some(vec![1.; 3]));
+        Ok(())
     }
 }
