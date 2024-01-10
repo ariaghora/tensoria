@@ -7,7 +7,7 @@ use include_dir::{Dir, include_dir};
 use lazy_static::lazy_static;
 use num_traits::Num;
 use uuid::Uuid;
-use wgpu::BindGroupEntry;
+use wgpu::{BindGroupEntry, ComputePipeline};
 use wgpu::util::DeviceExt;
 
 use crate::gpu::context::{Executor, GPUContext};
@@ -332,127 +332,25 @@ impl<T: Clone + Pod + Default + Debug + Num> GPUArray<T>
 
     /// Binary operation involving shape broadcasting
     pub fn bin_op_broadcast<S: Shader>(&self, other: &GPUArray<T>, op_type: S) -> GPUArray<T> {
-        if self.context_id != other.context_id {
-            panic!("cannot do operations on GPUArray from different execution context")
-        }
-
-        let res_id = Uuid::new_v4().to_string();
-        self.executor.write().unwrap().synced = false;
-
         let (res_shape, _, _, _) = compute_broadcasted_shape_and_strides(
             &self.shape,
             &other.shape,
             &self.strides,
             &other.strides,
         );
-        let res_strides = shape_to_strides(&res_shape);
-        let (res_storage_buf, staging_buf) = match &self.data_type {
-            GPUDataType::F32 => {
-                let storage_buf = create_storage_buf::<f32>(
-                    &self.executor.read().unwrap().device,
-                    &res_id,
-                    None,
-                    &res_shape,
-                );
-                let staging_buf = create_staging_buf::<f32>(
-                    &self.executor.read().unwrap().device,
-                    &res_id,
-                    &None,
-                    &res_shape,
-                );
-                (storage_buf, staging_buf)
-            }
-            GPUDataType::I32 => {
-                let storage_buf = create_storage_buf::<i32>(
-                    &self.executor.read().unwrap().device,
-                    &res_id,
-                    None,
-                    &res_shape,
-                );
-                let staging_buf = create_staging_buf::<i32>(
-                    &self.executor.read().unwrap().device,
-                    &res_id,
-                    &None,
-                    &res_shape,
-                );
-                (storage_buf, staging_buf)
-            }
-        };
 
-        let res_gpu = Self {
-            id: res_id.clone(),
-            initializer: false,
-            init_data: None,
-            context_id: self.context_id,
-            data_type: self.data_type.clone(),
-            shape: res_shape,
-            strides: res_strides,
-            executor: Arc::clone(&self.executor),
-            main_buffer: res_storage_buf,
-            staging_buffer: staging_buf,
-        };
-
-        let buf_binding_0 = &self.main_buffer;
-        let buf_binding_1 = &other.main_buffer;
-        let buf_binding_2 = &res_gpu.main_buffer;
-        let buffers = vec![buf_binding_0, buf_binding_1, buf_binding_2];
-
-        let shader_template = PROJECT_DIR
-            .get_file(op_type.shader_path())
-            .unwrap()
-            .contents_utf8()
-            .unwrap();
-        let mut templ = tera::Tera::default();
-        let mut params = tera::Context::new();
-        templ
-            .add_raw_template(&op_type.shader_path(), shader_template)
-            .unwrap();
-
-        let operands = vec![self, other];
-        let workgroup_sizes = op_type.prepare(operands, &res_gpu, &mut params);
-
-        let shader_source = templ.render(&op_type.shader_path(), &params).unwrap();
-
-        self.dispatch_compute(buffers, &shader_source, workgroup_sizes);
-
-        let encoder = &mut self.executor.write().unwrap().encoder;
-        encoder.copy_buffer_to_buffer(
-            &res_gpu.main_buffer,
-            0,
-            &res_gpu.staging_buffer,
-            0,
-            res_gpu.staging_buffer.size(),
-        );
-
-        res_gpu
+        return self.bin_op(other, res_shape, op_type);
     }
 
-    fn dispatch_compute(
+    /// Run compute pipeline from prepared pipeline. This is useful to run pipelines multiple
+    /// times while using the same pipeline without recompiling shader modules.
+    fn dispatch_compute_shader_pipeline(
         &self,
         buffers: Vec<&wgpu::Buffer>,
-        shader_source: &str,
+        pipeline: &ComputePipeline,
         wg_sizes: (u32, u32, u32),
     ) {
-        let shader_module = {
-            let dev = &self.executor.read().unwrap().device;
-            let module = dev.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: None,
-                source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(shader_source)),
-            });
-            module
-        };
-
-        let compute_pipeline = {
-            let dev = &self.executor.read().unwrap().device;
-            dev.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: None,
-                layout: None,
-                module: &shader_module,
-                entry_point: "main",
-            })
-        };
-
-        let bind_group_layout = compute_pipeline.get_bind_group_layout(0);
+        let bind_group_layout = pipeline.get_bind_group_layout(0);
 
         let bind_group_entries: Vec<BindGroupEntry> = buffers
             .iter()
@@ -478,12 +376,40 @@ impl<T: Clone + Pod + Default + Debug + Num> GPUArray<T>
                 label: None,
                 timestamp_writes: None,
             });
-            cpass.set_pipeline(&compute_pipeline);
+            cpass.set_pipeline(&pipeline);
             cpass.set_bind_group(0, &bind_group, &[]);
 
             let (x, y, z) = wg_sizes;
             cpass.dispatch_workgroups(x, y, z);
         }
+    }
+
+    /// Directly run compute pipeline from &str shader source
+    fn dispatch_compute(
+        &self,
+        buffers: Vec<&wgpu::Buffer>,
+        shader_source: &str,
+        wg_sizes: (u32, u32, u32),
+    ) {
+        let shader_module = {
+            let dev = &self.executor.read().unwrap().device;
+            let module = dev.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: None,
+                source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(shader_source)),
+            });
+            module
+        };
+
+        let compute_pipeline = {
+            let dev = &self.executor.read().unwrap().device;
+            dev.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: None,
+                layout: None,
+                module: &shader_module,
+                entry_point: "main",
+            })
+        };
+        self.dispatch_compute_shader_pipeline(buffers, &compute_pipeline, wg_sizes);
     }
 
     /// This method copies the actual data from GPU, wrap it as ArrayData then
