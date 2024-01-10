@@ -243,6 +243,9 @@ impl<T: Clone + Pod + Default + Debug + Num> GPUArray<T>
         self.bin_op(&indices_arr, out_shape, Slice::new(axis))
     }
 
+    /// Sum along axis and squeeze the singleton axis when keep_dim is false.
+    /// TODO: efficiently manage resource. At this moment we perform buffer-to-buffer copy
+    ///     after each slice addition
     pub fn sum_axis(&self, axis: i32, keep_dim: bool) -> GPUArray<T> {
         let axis_len = self.shape[axis as usize];
         if axis_len <= 0 {
