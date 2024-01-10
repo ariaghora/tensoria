@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::fmt::{Debug, Formatter};
+use std::ops::Add;
 use std::sync::{Arc, RwLock};
 
 use bytemuck::Pod;
@@ -59,6 +60,7 @@ pub struct GPUArray<T> {
     init_data: Option<Vec<T>>,
     initializer: bool,
     context_id: Uuid,
+    context: GPUContext,
     executor: Arc<RwLock<Executor>>,
     main_buffer: wgpu::Buffer,
     staging_buffer: wgpu::Buffer,
@@ -197,6 +199,7 @@ impl<T: Clone + Pod + Default + Debug + Num> GPUArray<T>
             initializer: true,
             init_data: Some(data),
             context_id: context.id,
+            context: context.clone(),
             data_type: dtype,
             shape: shape.clone(),
             strides: shape_to_strides(&shape),
@@ -210,7 +213,7 @@ impl<T: Clone + Pod + Default + Debug + Num> GPUArray<T>
         self.bin_op_broadcast(other, MatMul {})
     }
 
-    pub fn slice<I: AsRef<[i32]>>(&self, axis: i32, indices: I) -> GPUArray<T> {
+    pub fn slice_axis<I: AsRef<[i32]>>(&self, axis: i32, indices: I) -> GPUArray<T> {
         let mut out_shape = self.shape.clone();
         out_shape[axis as usize] = indices.as_ref().len();
 
@@ -238,6 +241,31 @@ impl<T: Clone + Pod + Default + Debug + Num> GPUArray<T>
         );
 
         self.bin_op(&indices_arr, out_shape, Slice::new(axis))
+    }
+
+    pub fn sum_axis(&self, axis: i32, keep_dim: bool) -> GPUArray<T> {
+        let axis_len = self.shape[axis as usize];
+        if axis_len <= 0 {
+            panic!("Sum axis must be positive non-zero");
+        }
+
+        let mut res: Option<GPUArray<T>> = None;
+        for idx in 0..axis_len {
+            let slice = self.slice_axis(axis, [idx as i32]);
+            res = Some(match res {
+                None => { slice }
+                Some(r) => { r.add(&slice) }
+            })
+        }
+        let mut res = res.unwrap();
+        let new_shape = if keep_dim {
+            res.shape.clone()
+        } else {
+            res.shape.clone().into_iter().filter(|v| *v != 1).collect::<Vec<usize>>()
+        };
+        res.shape = new_shape;
+        res.strides = shape_to_strides(&res.shape);
+        res
     }
 
     /// General binary operation
@@ -288,6 +316,7 @@ impl<T: Clone + Pod + Default + Debug + Num> GPUArray<T>
             initializer: false,
             init_data: None,
             context_id: self.context_id,
+            context: self.context.clone(),
             data_type: self.data_type.clone(),
             shape: out_shape,
             strides: out_strides,
@@ -614,29 +643,48 @@ mod test {
     fn slice() {
         let ctx = GPUContext::new();
         let x = GPUArray::new_with_ctx(&ctx, vec![1., 2., 3., 4., 5., 6., 7., 8., 9.], vec![3, 3]);
-        let res = x.slice(0, [1]);
+        let res = x.slice_axis(0, [1]);
         assert_eq!(res.to_vec(), vec![4., 5., 6.]);
 
         let ctx = GPUContext::new();
         let x = GPUArray::new_with_ctx(&ctx, vec![1., 2., 3., 4., 5., 6., 7., 8., 9.], vec![3, 3]);
-        let res = x.slice(0, [0, 2]);
+        let res = x.slice_axis(0, [0, 2]);
         assert_eq!(res.to_vec(), vec![1., 2., 3., 7., 8., 9.]);
 
         let ctx = GPUContext::new();
         let x = GPUArray::new_with_ctx(&ctx, vec![1., 2., 3., 4., 5., 6., 7., 8., 9.], vec![3, 3]);
-        let res = x.slice(1, [0, 2]);
+        let res = x.slice_axis(1, [0, 2]);
         assert_eq!(res.to_vec(), vec![1., 3., 4., 6., 7., 9.]);
 
         let ctx = GPUContext::new();
         let x = GPUArray::new_with_ctx(&ctx, vec![1., 2., 3., 4., 5., 6.], vec![3, 2]);
-        let res = x.slice(1, [1]);
+        let res = x.slice_axis(1, [1]);
         assert_eq!(res.to_vec(), vec![2., 4., 6.]);
 
         let ctx = GPUContext::new();
         let x = GPUArray::new_with_ctx(&ctx, vec![2, 2, 2, 2, 1, 1, 1, 1], vec![2, 2, 2]);
-        let res = x.slice(0, [1]);
+        let res = x.slice_axis(0, [1]);
         assert_eq!(res.to_vec(), vec![1, 1, 1, 1]);
-        let res = x.slice(1, [1]);
+        let res = x.slice_axis(1, [1]);
         assert_eq!(res.to_vec(), vec![2, 2, 1, 1]);
+    }
+
+    #[test]
+    fn sum() {
+        let ctx = GPUContext::new();
+        let x = GPUArray::new_with_ctx(&ctx, vec![1., 2., 3., 4., 5., 6.], vec![3, 2]);
+        let res = x.sum_axis(0, true);
+        assert_eq!(res.to_vec(), vec![9., 12.]);
+        assert_eq!(res.shape, vec![1, 2]);
+        let res = x.sum_axis(1, false);
+        assert_eq!(res.to_vec(), vec![3., 7., 11.]);
+        assert_eq!(res.shape, vec![3]);
+        let x = GPUArray::new_with_ctx(&ctx, vec![2, 2, 2, 2, 1, 1, 1, 1], vec![2, 2, 2]);
+        let res = x.sum_axis(0, false);
+        assert_eq!(res.to_vec(), vec![3, 3, 3, 3]);
+        assert_eq!(res.shape, vec![2, 2]);
+        let res = x.sum_axis(1, true);
+        assert_eq!(res.to_vec(), vec![4, 4, 2, 2]);
+        assert_eq!(res.shape, vec![2, 1, 2]);
     }
 }

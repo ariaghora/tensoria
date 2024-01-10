@@ -2,6 +2,7 @@ use std::sync::{Arc, RwLock};
 
 use uuid::Uuid;
 
+#[derive(Clone)]
 pub struct GPUContext {
     pub(crate) id: Uuid,
     pub(crate) executor: Arc<RwLock<Executor>>,
