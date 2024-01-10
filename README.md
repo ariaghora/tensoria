@@ -12,6 +12,8 @@
 An ergonomic tensor manipulation library running on GPU, self-contained, in pure rust
 </p>
 
+> At this moment, this library is meant to be the fundamental for one of my research works. There is only **_very limited_** set of supported operations. You may consider using [burn-rs](https://burn.dev/) for a more complete one or even [rust binding for PyTorch](https://github.com/LaurentMazare/tch-rs).
+
 ## Features
 
 - Supports GPU with CPU fallback.
