@@ -86,9 +86,6 @@ impl Shader for Slice {
         params.insert("input_shape_csv", &vec_to_csv(&output.shape));
         params.insert("input_strides_csv", &vec_to_csv(&operands[0].strides));
         params.insert("input_ndim", &operands[0].shape.len());
-        params.insert("indices_shape_csv", &vec_to_csv(&operands[1].shape));
-        params.insert("indices_strides_csv", &vec_to_csv(&operands[1].strides));
-        params.insert("indices_ndim", &operands[1].shape.len());
         params.insert("indices_len", &operands[1].shape.iter().fold(1, |x, y| x * y));
         params.insert("output_shape_csv", &vec_to_csv(&output.shape));
         params.insert("output_strides_csv", &vec_to_csv(&output.strides));
@@ -96,23 +93,6 @@ impl Shader for Slice {
         params.insert("output_len", &output.shape.iter().fold(1, |x, y| x * y));
         params.insert("slicing_axis", &self.slice_axis);
         params.insert("nd_index_init", &vec_to_csv(&vec![0; operands[0].shape.len()]));
-
-        fn generate_idx_code(idx_var_name: &str, shape: &Vec<usize>, strides: &Vec<usize>) -> String {
-            let mut code = String::new();
-            let ndim = shape.len();
-            let mut reduced_idx_var = format!("{}_", idx_var_name); // Temporary variable to hold reduced index
-
-            code.push_str(&format!("var {} = {};\n", reduced_idx_var, idx_var_name)); // Initialize reduced index
-
-            for (i, &stride) in strides.iter().enumerate().rev() { // Iterate in reverse order for row-major
-                let dim_index_var = format!("{}_dim{}", idx_var_name, i);
-                code.push_str(&format!("var {} = {} / {};\n", dim_index_var, reduced_idx_var, stride)); // Calculate dimension index
-                code.push_str(&format!("{} = {} % {};\n", reduced_idx_var, reduced_idx_var, stride)); // Reduce the linear index
-            }
-
-            code
-        }
-        params.insert("idx_modifier_statements", &generate_idx_code("idx", &operands[0].shape, &operands[0].strides));
 
         let local_size_x = 256;
         let out_shape = &output.shape;
