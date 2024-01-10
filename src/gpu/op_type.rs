@@ -59,9 +59,9 @@ impl Shader for MatMul {
         params: &mut Context,
     ) -> (u32, u32, u32) {
         let out_shape = &output.shape;
-        let m = out_shape[0];
-        let n = out_shape[1];
-        let k = out_shape[0];
+        let m = operands[0].shape[0];
+        let n = operands[1].shape[1];
+        let k = operands[1].shape[0];
 
         params.insert("input_0_type", &operands[0].data_type.wgsl_type());
         params.insert("input_1_type", &operands[1].data_type.wgsl_type());
