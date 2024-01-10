@@ -128,17 +128,21 @@ fn vec_to_csv(shape: &Vec<usize>) -> String {
 
 fn generate_idx_code(idx_var_name: &str, shape: &Vec<usize>, adjusted_strides: &Vec<usize>) -> String {
     let mut code = String::new();
+    let mut division_products = vec![1; shape.len()];
+
+    // Precompute division products in reverse order
+    for i in (0..shape.len() - 1).rev() {
+        division_products[i] = division_products[i + 1] * shape[i + 1];
+    }
+
     let mut terms = Vec::new();
     for i in 0..shape.len() {
-        let mut division_product = 1;
-        for j in i + 1..shape.len() {
-            division_product *= shape[j];
-        }
-        let term = format!("((idx / {}u) % {}u) * {}u", division_product, shape[i], adjusted_strides[i]);
+        let term = format!("((idx / {}u) % {}u) * {}u", division_products[i], shape[i], adjusted_strides[i]);
         terms.push(term);
     }
-    let compiled_terms = terms.join("+");
-    code.push_str(&format!("{} += {};\n", idx_var_name, compiled_terms));
+
+    let compiled_terms = terms.join(" + ");
+    code.push_str(&format!("{} = {};\n", idx_var_name, compiled_terms));
 
     code
 }

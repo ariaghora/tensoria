@@ -284,7 +284,7 @@ impl<EType> Tensor<EType>
         self.tensor_binop(other, sub_fn, lgf, rgf)
     }
 
-    fn mean(&self, axis: Option<usize>, keep_dim: bool) -> Self {
+    pub fn mean(&self, axis: Option<usize>, keep_dim: bool) -> Self {
         let mean_fn: UnOpFn<EType> = Box::new(move |data| {
             data.mean(axis, keep_dim)
         });
@@ -320,7 +320,7 @@ impl<EType> Tensor<EType>
         res
     }
 
-    fn sum(&self, axis: Option<usize>, keep_dim: bool) -> Self {
+    pub fn sum(&self, axis: Option<usize>, keep_dim: bool) -> Self {
         let sum_fn: UnOpFn<EType> = Box::new(move |data| {
             data.sum(axis, keep_dim)
         });
@@ -620,7 +620,7 @@ mod test {
         res.backward()?;
         assert_eq!(res.shape(), vec![1, 3]);
         assert_eq!(x.grad_vec(), Some(vec![0.5; 6]));
-        
+
         Ok(())
     }
 
