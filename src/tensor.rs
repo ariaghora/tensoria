@@ -141,7 +141,7 @@ impl<EType> Tensor<EType>
         let data_ref = &self.tp.read().unwrap().data;
         match data_ref {
             ArrayData::CPUArray(data) => { data.to_owned().into_raw_vec() }
-            ArrayData::GPUArray(data) => { data.data() }
+            ArrayData::GPUArray(data) => { data.to_vec() }
         }
     }
 
@@ -163,7 +163,7 @@ impl<EType> Tensor<EType>
             Some(arr) => {
                 match arr {
                     ArrayData::CPUArray(val) => { Some(val.to_owned().into_raw_vec()) }
-                    ArrayData::GPUArray(val) => { Some(val.data()) }
+                    ArrayData::GPUArray(val) => { Some(val.to_vec()) }
                 }
             }
         }
@@ -296,7 +296,7 @@ impl<EType> Tensor<EType>
             // it will be -1 if no axis is specified and greater than or equals to zero otherwise.
             let axis = match &parent.read().unwrap().deps[1].read().unwrap().data {
                 ArrayData::CPUArray(ax) => { ax.first().unwrap().to_owned() }
-                ArrayData::GPUArray(ax) => { ax.data()[0] }
+                ArrayData::GPUArray(ax) => { ax.to_vec()[0] }
             };
 
             let numel = if axis > EType::from(-1).unwrap() {

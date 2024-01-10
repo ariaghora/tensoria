@@ -12,7 +12,7 @@ pub trait Shader {
     ) -> (u32, u32, u32);
 }
 
-fn shape_to_csv(shape: &Vec<usize>) -> String {
+fn vec_to_csv(shape: &Vec<usize>) -> String {
     shape
         .iter()
         .map(|v| v.to_string())
@@ -65,13 +65,13 @@ fn prepare_binop_broadcast_shader<T>(operands: Vec<&GPUArray<T>>, output: &GPUAr
         params.insert("idx1_code", &idx1_code);
     }
 
-    params.insert("input_0_shape_csv", &shape_to_csv(&adj_shape0));
-    params.insert("input_0_strides_csv", &shape_to_csv(&adj_strides0));
+    params.insert("input_0_shape_csv", &vec_to_csv(&adj_shape0));
+    params.insert("input_0_strides_csv", &vec_to_csv(&adj_strides0));
     params.insert("input_0_ndim", &adj_shape0.len());
-    params.insert("input_1_shape_csv", &shape_to_csv(&adj_shape1));
-    params.insert("input_1_strides_csv", &shape_to_csv(&adj_strides1));
+    params.insert("input_1_shape_csv", &vec_to_csv(&adj_shape1));
+    params.insert("input_1_strides_csv", &vec_to_csv(&adj_strides1));
     params.insert("input_1_ndim", &adj_shape1.len());
-    params.insert("output_shape_csv", &shape_to_csv(&output.shape));
+    params.insert("output_shape_csv", &vec_to_csv(&output.shape));
     params.insert("output_ndim", &output.shape.len());
     params.insert("output_len", &output.shape.iter().fold(1, |x, y| x * y));
 
@@ -146,5 +146,64 @@ impl Shader for MatMul {
         let num_workgroups_y = (m + local_size_x_y - 1) / local_size_x_y;
         let wg = (num_workgroups_x as u32, num_workgroups_y as u32, 1);
         return wg;
+    }
+}
+
+pub struct Slice {
+    slice_axis: i32,
+}
+
+impl Slice {
+    pub fn new(axis: i32) -> Self {
+        Slice { slice_axis: axis }
+    }
+}
+
+impl Shader for Slice {
+    fn shader_path(&self) -> String {
+        "slice.wgsl".into()
+    }
+
+    fn prepare<T>(&self, operands: Vec<&GPUArray<T>>, output: &GPUArray<T>, params: &mut Context) -> (u32, u32, u32) {
+        params.insert("input_type", &operands[0].data_type.wgsl_type());
+        params.insert("indices_type", &operands[1].data_type.wgsl_type());
+        params.insert("output_type", &output.data_type.wgsl_type());
+        // Input shape now adjusted to be after slice, i.e., similar to that of the output
+        params.insert("input_shape_csv", &vec_to_csv(&output.shape));
+        params.insert("input_strides_csv", &vec_to_csv(&operands[0].strides));
+        params.insert("input_ndim", &operands[0].shape.len());
+        params.insert("indices_shape_csv", &vec_to_csv(&operands[1].shape));
+        params.insert("indices_strides_csv", &vec_to_csv(&operands[1].strides));
+        params.insert("indices_ndim", &operands[1].shape.len());
+        params.insert("indices_len", &operands[1].shape.iter().fold(1, |x, y| x * y));
+        params.insert("output_shape_csv", &vec_to_csv(&output.shape));
+        params.insert("output_strides_csv", &vec_to_csv(&output.strides));
+        params.insert("output_ndim", &output.shape.len());
+        params.insert("output_len", &output.shape.iter().fold(1, |x, y| x * y));
+        params.insert("slicing_axis", &self.slice_axis);
+        params.insert("nd_index_init", &vec_to_csv(&vec![0; operands[0].shape.len()]));
+
+        fn generate_idx_code(idx_var_name: &str, shape: &Vec<usize>, strides: &Vec<usize>) -> String {
+            let mut code = String::new();
+            let ndim = shape.len();
+            let mut reduced_idx_var = format!("{}_", idx_var_name); // Temporary variable to hold reduced index
+
+            code.push_str(&format!("var {} = {};\n", reduced_idx_var, idx_var_name)); // Initialize reduced index
+
+            for (i, &stride) in strides.iter().enumerate().rev() { // Iterate in reverse order for row-major
+                let dim_index_var = format!("{}_dim{}", idx_var_name, i);
+                code.push_str(&format!("var {} = {} / {};\n", dim_index_var, reduced_idx_var, stride)); // Calculate dimension index
+                code.push_str(&format!("{} = {} % {};\n", reduced_idx_var, reduced_idx_var, stride)); // Reduce the linear index
+            }
+
+            code
+        }
+        params.insert("idx_modifier_statements", &generate_idx_code("idx", &operands[0].shape, &operands[0].strides));
+
+        let local_size_x = 256;
+        let out_shape = &output.shape;
+        let num_elements = out_shape.iter().fold(1, |x, y| x * y);
+        let num_workgroups_x = (num_elements + local_size_x - 1) / local_size_x;
+        (num_workgroups_x as u32, 1, 1)
     }
 }

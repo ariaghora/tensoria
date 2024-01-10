@@ -5,12 +5,13 @@ use std::sync::{Arc, RwLock};
 use bytemuck::Pod;
 use include_dir::{Dir, include_dir};
 use lazy_static::lazy_static;
+use num_traits::Num;
 use uuid::Uuid;
 use wgpu::BindGroupEntry;
 use wgpu::util::DeviceExt;
 
 use crate::gpu::context::{Executor, GPUContext};
-use crate::gpu::op_type::{MatMul, Shader};
+use crate::gpu::op_type::{MatMul, Shader, Slice};
 
 static PROJECT_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/gpu/wgsl/");
 
@@ -63,7 +64,7 @@ pub struct GPUArray<T> {
     staging_buffer: wgpu::Buffer,
 }
 
-impl<T: Default + Clone + Pod + Default + Debug> Clone for GPUArray<T>
+impl<T: Default + Clone + Pod + Default + Debug + Num> Clone for GPUArray<T>
     where
         Vec<T>: GetType,
 {
@@ -77,7 +78,7 @@ impl<T: Default + Clone + Pod + Default + Debug> Clone for GPUArray<T>
             arr.executor = self.executor.clone();
             return arr;
         } else {
-            let init_data = self.data();
+            let init_data = self.to_vec();
             let mut arr = GPUArray::new(init_data.clone(), self.shape.clone());
             arr.id = self.id.clone();
             arr.data_type = self.data_type.clone();
@@ -168,7 +169,7 @@ pub fn compute_broadcasted_shape_and_strides(
     )
 }
 
-impl<T: Clone + Pod + Default + Debug> GPUArray<T>
+impl<T: Clone + Pod + Default + Debug + Num> GPUArray<T>
     where
         Vec<T>: GetType,
 {
@@ -209,16 +210,127 @@ impl<T: Clone + Pod + Default + Debug> GPUArray<T>
         self.bin_op_broadcast(other, MatMul {})
     }
 
-    pub fn slice<I: AsRef<[u32]>>(&self, axis: usize, indices: I) {
-        let buf_binding_0 = &self.main_buffer;
-        let buf_binding_1 = &create_storage_buf::<u32>(
-            &self.executor.read().unwrap().device,
-            "",
-            Some(&indices.as_ref().to_vec()),
-            &vec![indices.as_ref().len()],
+    pub fn slice<I: AsRef<[i32]>>(&self, axis: i32, indices: I) -> GPUArray<T> {
+        let mut out_shape = self.shape.clone();
+        out_shape[axis as usize] = indices.as_ref().len();
+
+        // Hackity hack to force indices buffer to be of type i32
+        let mut indices_arr = Self::new(vec![T::default()], vec![1]);
+        let indices_shape = vec![indices.as_ref().len()];
+        let indices_values = indices.as_ref().to_vec();
+        let idx_id = &indices_arr.id;
+        indices_arr.data_type = GPUDataType::I32;
+        indices_arr.executor = self.executor.clone();
+        indices_arr.context_id = self.context_id;
+        indices_arr.shape = indices_shape;
+        indices_arr.strides = shape_to_strides(&indices_arr.shape);
+        indices_arr.main_buffer = create_storage_buf::<i32>(
+            &indices_arr.executor.read().unwrap().device,
+            idx_id,
+            Some(&indices_values),
+            &indices_arr.shape,
         );
+        indices_arr.staging_buffer = create_staging_buf::<i32>(
+            &indices_arr.executor.read().unwrap().device,
+            idx_id,
+            &None,
+            &indices_arr.shape,
+        );
+
+        self.bin_op(&indices_arr, out_shape, Slice::new(axis))
     }
 
+    /// General binary operation
+    pub fn bin_op<S: Shader>(&self, other: &GPUArray<T>, out_shape: Vec<usize>, op_type: S) -> GPUArray<T> {
+        if self.context_id != other.context_id {
+            panic!("cannot do operations on GPUArray from different execution context")
+        }
+
+        let res_id = Uuid::new_v4().to_string();
+        self.executor.write().unwrap().synced = false;
+        let out_strides = shape_to_strides(&out_shape);
+
+        let (res_storage_buf, staging_buf) = match &self.data_type {
+            GPUDataType::F32 => {
+                let storage_buf = create_storage_buf::<f32>(
+                    &self.executor.read().unwrap().device,
+                    &res_id,
+                    None,
+                    &out_shape,
+                );
+                let staging_buf = create_staging_buf::<f32>(
+                    &self.executor.read().unwrap().device,
+                    &res_id,
+                    &None,
+                    &out_shape,
+                );
+                (storage_buf, staging_buf)
+            }
+            GPUDataType::I32 => {
+                let storage_buf = create_storage_buf::<i32>(
+                    &self.executor.read().unwrap().device,
+                    &res_id,
+                    None,
+                    &out_shape,
+                );
+                let staging_buf = create_staging_buf::<i32>(
+                    &self.executor.read().unwrap().device,
+                    &res_id,
+                    &None,
+                    &out_shape,
+                );
+                (storage_buf, staging_buf)
+            }
+        };
+
+        let res_gpu = Self {
+            id: res_id.clone(),
+            initializer: false,
+            init_data: None,
+            context_id: self.context_id,
+            data_type: self.data_type.clone(),
+            shape: out_shape,
+            strides: out_strides,
+            executor: Arc::clone(&self.executor),
+            main_buffer: res_storage_buf,
+            staging_buffer: staging_buf,
+        };
+
+        let buf_binding_0 = &self.main_buffer;
+        let buf_binding_1 = &other.main_buffer;
+        let buf_binding_2 = &res_gpu.main_buffer;
+        let buffers = vec![buf_binding_0, buf_binding_1, buf_binding_2];
+
+        let shader_template = PROJECT_DIR
+            .get_file(op_type.shader_path())
+            .unwrap()
+            .contents_utf8()
+            .unwrap();
+        let mut templ = tera::Tera::default();
+        let mut params = tera::Context::new();
+        templ
+            .add_raw_template(&op_type.shader_path(), shader_template)
+            .unwrap();
+
+        let operands = vec![self, other];
+        let workgroup_sizes = op_type.prepare(operands, &res_gpu, &mut params);
+
+        let shader_source = templ.render(&op_type.shader_path(), &params).unwrap();
+
+        self.dispatch_compute(buffers, &shader_source, workgroup_sizes);
+
+        let encoder = &mut self.executor.write().unwrap().encoder;
+        encoder.copy_buffer_to_buffer(
+            &res_gpu.main_buffer,
+            0,
+            &res_gpu.staging_buffer,
+            0,
+            res_gpu.staging_buffer.size(),
+        );
+        res_gpu
+    }
+
+    /// Binary operation involving shape broadcasting
     pub fn bin_op_broadcast<S: Shader>(&self, other: &GPUArray<T>, op_type: S) -> GPUArray<T> {
         if self.context_id != other.context_id {
             panic!("cannot do operations on GPUArray from different execution context")
@@ -377,7 +489,7 @@ impl<T: Clone + Pod + Default + Debug> GPUArray<T>
     /// This method copies the actual data from GPU, wrap it as ArrayData then
     /// return it. This method should be used sparingly since frequent GPU <-> CPU data
     /// transfer is costly.
-    pub fn data(&self) -> Vec<T> {
+    pub fn to_vec(&self) -> Vec<T> {
         pollster::block_on(self.fetch())
     }
 
@@ -430,7 +542,7 @@ impl<T: Clone + Pod + Default + Debug> GPUArray<T>
 /// op(Self, &Self) and op(&Self, &Self)
 macro_rules! impl_bin_op {
     ($trait:ident, $method:ident, $op:expr) => {
-        impl<T: Clone + Pod + Default + Debug> std::ops::$trait<&Self> for GPUArray<T>
+        impl<T: Clone + Pod + Default + Debug + Num> std::ops::$trait<&Self> for GPUArray<T>
         where
             Vec<T>: GetType,
         {
@@ -441,7 +553,7 @@ macro_rules! impl_bin_op {
             }
         }
 
-        impl<T: Clone + Pod + Default + Debug> std::ops::$trait for &GPUArray<T>
+        impl<T: Clone + Pod + Default + Debug + Num> std::ops::$trait for &GPUArray<T>
         where
             Vec<T>: GetType,
         {
@@ -527,48 +639,78 @@ mod test {
     use crate::gpu::gpu_array::GPUArray;
 
     #[test]
-    fn test_simple_add() {
+    fn simple_add() {
         let ctx = GPUContext::new();
         let x = GPUArray::new_with_ctx(&ctx, vec![1., 2., 3.], vec![1, 3]);
         let y = GPUArray::new_with_ctx(&ctx, vec![2., 3., 4.], vec![1, 3]);
         let res = &x + &y;
 
-        assert_eq!(x.data(), vec![1., 2., 3.]);
-        assert_eq!(res.data(), vec![3., 5., 7.]);
+        assert_eq!(x.to_vec(), vec![1., 2., 3.]);
+        assert_eq!(res.to_vec(), vec![3., 5., 7.]);
     }
 
     #[test]
-    fn test_add_bcast() {
+    fn add_bcast() {
         let ctx = GPUContext::new();
         let x = GPUArray::new_with_ctx(&ctx, vec![1., 2., 3., 4.], vec![2, 2]);
         let y = GPUArray::new_with_ctx(&ctx, vec![10., 10.], vec![2]);
         let res = x + &y;
-        assert_eq!(res.data(), vec![11., 12., 13., 14.]);
+        assert_eq!(res.to_vec(), vec![11., 12., 13., 14.]);
 
         let x = GPUArray::new_with_ctx(&ctx, vec![1., 2., 3., 4.], vec![2, 2]);
         let y = GPUArray::new_with_ctx(&ctx, vec![10., 10.], vec![2, 1]);
         let res = x.add(&y);
-        assert_eq!(res.data(), vec![11., 12., 13., 14.]);
+        assert_eq!(res.to_vec(), vec![11., 12., 13., 14.]);
     }
 
     #[test]
-    fn test_add_bcast_bidirection() {
+    fn add_bcast_bidirection() {
         let ctx = GPUContext::new();
         let x = GPUArray::new_with_ctx(&ctx, vec![1., 2., 3.], vec![3]);
         let y = GPUArray::new_with_ctx(&ctx, vec![1., 2., 3.], vec![3, 1]);
         let res = x + &y;
         assert_eq!(
-            res.data(),
+            res.to_vec(),
             vec![2.0, 3.0, 4.0, 3.0, 4.0, 5.0, 4.0, 5.0, 6.0]
         );
     }
 
     #[test]
-    fn test_matmul() {
+    fn matmul() {
         let ctx = GPUContext::new();
         let x = GPUArray::new_with_ctx(&ctx, vec![1., 2., 3., 4.], vec![2, 2]);
         let y = GPUArray::new_with_ctx(&ctx, vec![2., 2., 2., 2.], vec![2, 2]);
         let res = x.matmul(&y);
-        assert_eq!(res.data(), vec![6., 6., 14., 14.]);
+        assert_eq!(res.to_vec(), vec![6., 6., 14., 14.]);
+    }
+
+    #[test]
+    fn slice() {
+        let ctx = GPUContext::new();
+        let x = GPUArray::new_with_ctx(&ctx, vec![1., 2., 3., 4., 5., 6., 7., 8., 9.], vec![3, 3]);
+        let res = x.slice(0, [1]);
+        assert_eq!(res.to_vec(), vec![4., 5., 6.]);
+
+        let ctx = GPUContext::new();
+        let x = GPUArray::new_with_ctx(&ctx, vec![1., 2., 3., 4., 5., 6., 7., 8., 9.], vec![3, 3]);
+        let res = x.slice(0, [0, 2]);
+        assert_eq!(res.to_vec(), vec![1., 2., 3., 7., 8., 9.]);
+
+        let ctx = GPUContext::new();
+        let x = GPUArray::new_with_ctx(&ctx, vec![1., 2., 3., 4., 5., 6., 7., 8., 9.], vec![3, 3]);
+        let res = x.slice(1, [0, 2]);
+        assert_eq!(res.to_vec(), vec![1., 3., 4., 6., 7., 9.]);
+
+        let ctx = GPUContext::new();
+        let x = GPUArray::new_with_ctx(&ctx, vec![1., 2., 3., 4., 5., 6.], vec![3, 2]);
+        let res = x.slice(1, [1]);
+        assert_eq!(res.to_vec(), vec![2., 4., 6.]);
+
+        let ctx = GPUContext::new();
+        let x = GPUArray::new_with_ctx(&ctx, vec![2, 2, 2, 2, 1, 1, 1, 1], vec![2, 2, 2]);
+        let res = x.slice(0, [1]);
+        assert_eq!(res.to_vec(), vec![1, 1, 1, 1]);
+        let res = x.slice(1, [1]);
+        assert_eq!(res.to_vec(), vec![2, 2, 1, 1]);
     }
 }
