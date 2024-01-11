@@ -201,11 +201,17 @@ fn prepare_binop_broadcast_shader<T>(operands: Vec<&GPUArray<T>>, output: &GPUAr
 
     params.insert("binop_stmt", binop_stmt);
 
-    let local_size_x = 256;
+    let local_size_x = 16; // Use a smaller workgroup size for better distribution
+    let local_size_y = 16;
+
     let out_shape = &output.shape;
     let num_elements = out_shape.iter().fold(1, |x, y| x * y);
-    let num_workgroups_x = (num_elements + local_size_x - 1) / local_size_x;
-    (num_workgroups_x as u32, 1, 1)
+
+    // Calculate the number of workgroups needed in each dimension
+    let num_workgroups_x = ((out_shape[0] + local_size_x - 1) / local_size_x) as u32;
+    let num_workgroups_y = ((num_elements / out_shape[0] + local_size_y - 1) / local_size_y) as u32;
+
+    (num_workgroups_x, num_workgroups_y, 1)
 }
 
 fn prepare_reduction_shader<T>(operands: Vec<&GPUArray<T>>, output: &GPUArray<T>, params: &mut Context, reduction_stmt: &str, postproc_stmt: &str) -> (u32, u32, u32) {

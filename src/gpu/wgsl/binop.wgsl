@@ -13,9 +13,10 @@ const input_1_shape   = array<i32, {{input_1_ndim}}>( {{input_1_shape_csv}} );
 const input_1_strides = array<i32, {{input_1_ndim}}>( {{input_1_strides_csv}} );
 const output_shape    = array<i32, {{output_ndim}}>( {{output_shape_csv}} );
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(16, 16)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    var idx: u32 = gid.x;
+    let numel_x = u32(output_shape[0]);
+    var idx: u32 = gid.y * numel_x + gid.x;
 
     if idx >= {{output_len}}u { return; }
 
