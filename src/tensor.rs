@@ -11,7 +11,7 @@ use crate::gpu::gpu_array::GetType;
 use crate::traits::TensoriaOps;
 
 pub struct TensorPointer<EType> {
-    data: ArrayData<EType>,
+    pub(crate) data: ArrayData<EType>,
     grad: Option<ArrayData<EType>>,
     deps: Vec<Arc<RwLock<TensorPointer<EType>>>>,
     grad_fn: Option<GradFn<EType>>,
