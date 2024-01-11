@@ -7,4 +7,5 @@ pub mod optim;
 pub mod gpu;
 pub mod tensor;
 pub mod array;
+pub mod nn;
 
