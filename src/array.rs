@@ -1,16 +1,18 @@
 use std::fmt::Debug;
-use std::ops::{Add, Div, Mul, Sub};
+use std::ops::{Div, Mul, Sub};
 
 use bytemuck::Pod;
 use ndarray::{ArrayD, Axis, Ix2};
 
 use crate::error::TensoriaError;
-use crate::gpu::gpu_array::{GetType, GPUArray};
+use crate::gpu::gpu_array::{GPUArray, GetType};
 use crate::traits::TensoriaOps;
 
 #[derive(PartialEq, Debug)]
-pub enum Device { CPU, GPU }
-
+pub enum Device {
+    CPU,
+    GPU,
+}
 
 #[derive(Debug)]
 pub enum ArrayData<EType> {
@@ -22,52 +24,68 @@ impl<EType> ArrayData<EType> {
     pub(crate) fn device(&self) -> Device {
         match self {
             ArrayData::CPUArray(_) => Device::CPU,
-            ArrayData::GPUArray(_) => Device::GPU
+            ArrayData::GPUArray(_) => Device::GPU,
         }
     }
 }
 
 impl<EType> ArrayData<EType>
-    where
-        EType: TensoriaOps + Clone + Pod + Default + Debug,
-        Vec<EType>: GetType {
-    pub fn new_cpu<S: AsRef<[usize]>>(shape: S, data: Vec<EType>) -> Result<ArrayData<EType>, TensoriaError> {
-        Ok(ArrayData::CPUArray(ArrayD::from_shape_vec(shape.as_ref(), data).map_err(|_| TensoriaError::CannotReshapeError {})?))
+where
+    EType: TensoriaOps + Clone + Pod + Default + Debug,
+    Vec<EType>: GetType,
+{
+    pub fn new_cpu<S: AsRef<[usize]>>(
+        shape: S,
+        data: Vec<EType>,
+    ) -> Result<ArrayData<EType>, TensoriaError> {
+        Ok(ArrayData::CPUArray(
+            ArrayD::from_shape_vec(shape.as_ref(), data)
+                .map_err(|_| TensoriaError::CannotReshapeError {})?,
+        ))
     }
 
-    pub fn new_gpu<S: AsRef<[usize]>>(shape: S, data: Vec<EType>) -> Result<ArrayData<EType>, TensoriaError> {
+    pub fn new_gpu<S: AsRef<[usize]>>(
+        shape: S,
+        data: Vec<EType>,
+    ) -> Result<ArrayData<EType>, TensoriaError> {
         let len = shape.as_ref().iter().fold(1, |x, y| x * y);
-        if len != data.len() { return Err(TensoriaError::CannotReshapeError {}); }
-        Ok(ArrayData::GPUArray(GPUArray::new(data, shape.as_ref().to_vec())))
+        if len != data.len() {
+            return Err(TensoriaError::CannotReshapeError {});
+        }
+        Ok(ArrayData::GPUArray(GPUArray::new(
+            data,
+            shape.as_ref().to_vec(),
+        )))
     }
 
     pub fn clone(&self) -> Self {
         match self {
-            ArrayData::CPUArray(data) => { Self::CPUArray(data.clone()) }
-            ArrayData::GPUArray(data) => { Self::GPUArray(data.clone()) }
+            ArrayData::CPUArray(data) => Self::CPUArray(data.clone()),
+            ArrayData::GPUArray(data) => Self::GPUArray(data.clone()),
         }
     }
 
     pub fn ndim(&self) -> usize {
         match self {
-            ArrayData::CPUArray(data) => { data.ndim() }
-            ArrayData::GPUArray(data) => { data.shape.len() }
+            ArrayData::CPUArray(data) => data.ndim(),
+            ArrayData::GPUArray(data) => data.shape.len(),
         }
     }
 
     pub fn shape(&self) -> Vec<usize> {
         match self {
-            ArrayData::CPUArray(data) => { data.shape().to_vec() }
-            ArrayData::GPUArray(data) => { data.shape.clone() }
+            ArrayData::CPUArray(data) => data.shape().to_vec(),
+            ArrayData::GPUArray(data) => data.shape.clone(),
         }
     }
 }
 
 /// Following set of implementations are related to public arithmetic functions
 impl<EType> ArrayData<EType>
-    where
-        EType: TensoriaOps + Clone + Pod + Default + Debug,
-        Vec<EType>: GetType {
+where
+    EType: TensoriaOps + Clone + Pod + Default + Debug,
+    Vec<EType>: GetType,
+{
     fn arr_add(&self, other: &ArrayData<EType>) -> ArrayData<EType> {
         match (self, other) {
             (ArrayData::CPUArray(ldata), ArrayData::CPUArray(rdata)) => {
@@ -76,7 +94,7 @@ impl<EType> ArrayData<EType>
             (ArrayData::GPUArray(ldata), ArrayData::GPUArray(rdata)) => {
                 ArrayData::GPUArray(ldata + rdata)
             }
-            _ => panic!("cannot add tensors from different device")
+            _ => panic!("cannot add tensors from different device"),
         }
     }
 
@@ -89,7 +107,7 @@ impl<EType> ArrayData<EType>
                 todo!();
                 // ArrayData::GPUArray(ldata / rdata)
             }
-            _ => panic!("cannot add tensors from different device")
+            _ => panic!("cannot add tensors from different device"),
         }
     }
     fn arr_mul(&self, other: &ArrayData<EType>) -> ArrayData<EType> {
@@ -100,7 +118,7 @@ impl<EType> ArrayData<EType>
             (ArrayData::GPUArray(ldata), ArrayData::GPUArray(rdata)) => {
                 ArrayData::GPUArray(ldata.mul(rdata))
             }
-            _ => panic!("cannot add tensors from different device")
+            _ => panic!("cannot add tensors from different device"),
         }
     }
     fn arr_sub(&self, other: &ArrayData<EType>) -> ArrayData<EType> {
@@ -111,20 +129,24 @@ impl<EType> ArrayData<EType>
             (ArrayData::GPUArray(ldata), ArrayData::GPUArray(rdata)) => {
                 ArrayData::GPUArray(ldata.sub(rdata))
             }
-            _ => panic!("cannot add tensors from different device")
+            _ => panic!("cannot add tensors from different device"),
         }
     }
 
     pub fn div_scalar_f32(&self, other: f32) -> ArrayData<EType> {
-        match self
-        {
+        match self {
             ArrayData::CPUArray(data) => {
-                let data_scaled = data.map(|v| EType::from(v.to_f32().unwrap() / other).unwrap()).to_owned().into_raw_vec();
+                let data_scaled = data
+                    .map(|v| EType::from(v.to_f32().unwrap() / other).unwrap())
+                    .to_owned()
+                    .into_raw_vec();
                 ArrayData::new_cpu(data.shape(), data_scaled).unwrap()
             }
-            ArrayData::GPUArray(data) => {
-                ArrayData::GPUArray(data.div(&GPUArray::new_with_ctx(&data.context, vec![EType::from(other).unwrap()], vec![1])))
-            }
+            ArrayData::GPUArray(data) => ArrayData::GPUArray(data.div(&GPUArray::new_with_ctx(
+                &data.context,
+                vec![EType::from(other).unwrap()],
+                vec![1],
+            ))),
         }
     }
 
@@ -132,7 +154,10 @@ impl<EType> ArrayData<EType>
         let l_ndim = self.ndim();
         let r_ndim = other.ndim();
         if (l_ndim != 2) && (r_ndim != 2) {
-            panic!("Both tensors must be of rank-2, but got rank-{} and rank-{} tensors", l_ndim, r_ndim);
+            panic!(
+                "Both tensors must be of rank-2, but got rank-{} and rank-{} tensors",
+                l_ndim, r_ndim
+            );
         }
 
         let (l_shape, r_shape) = (self.shape(), other.shape());
@@ -150,7 +175,7 @@ impl<EType> ArrayData<EType>
             (ArrayData::GPUArray(ldata), ArrayData::GPUArray(rdata)) => {
                 ArrayData::GPUArray(ldata.matmul(rdata))
             }
-            _ => panic!("cannot add tensors from different device")
+            _ => panic!("cannot add tensors from different device"),
         }
     }
 
@@ -165,28 +190,26 @@ impl<EType> ArrayData<EType>
                     }
                     Some(axis) => {
                         let mut mu = data.mean_axis(Axis(axis)).unwrap();
-                        if keep_dim { mu = mu.insert_axis(Axis(axis)); }
+                        if keep_dim {
+                            mu = mu.insert_axis(Axis(axis));
+                        }
                         ArrayData::CPUArray(mu)
                     }
                 }
             }
-            ArrayData::GPUArray(data) => {
-                match axis {
-                    None => {
-                        ArrayData::GPUArray(data.mean())
-                    }
-                    Some(axis) => {
-                        ArrayData::GPUArray(data.mean_axis(axis as i32, keep_dim))
-                    }
-                }
-            }
+            ArrayData::GPUArray(data) => match axis {
+                None => ArrayData::GPUArray(data.mean()),
+                Some(axis) => ArrayData::GPUArray(data.mean_axis(axis as i32, keep_dim)),
+            },
         }
     }
 
     pub fn scale(&self, v: EType) -> ArrayData<EType> {
         match self {
-            ArrayData::CPUArray(data) => { Self::CPUArray(data.map(|item| *item * v)) }
-            ArrayData::GPUArray(_) => { todo!() }
+            ArrayData::CPUArray(data) => Self::CPUArray(data.map(|item| *item * v)),
+            ArrayData::GPUArray(_) => {
+                todo!()
+            }
         }
     }
 
@@ -201,76 +224,127 @@ impl<EType> ArrayData<EType>
                     }
                     Some(axis) => {
                         let mut sum = data.sum_axis(Axis(axis));
-                        if keep_dim { sum = sum.insert_axis(Axis(axis)); }
+                        if keep_dim {
+                            sum = sum.insert_axis(Axis(axis));
+                        }
                         ArrayData::CPUArray(sum)
                     }
                 }
             }
-            ArrayData::GPUArray(data) => {
-                match axis {
-                    None => {
-                        ArrayData::GPUArray(data.sum())
-                    }
-                    Some(axis) => {
-                        ArrayData::GPUArray(data.sum_axis(axis as i32, keep_dim))
-                    }
-                }
-            }
+            ArrayData::GPUArray(data) => match axis {
+                None => ArrayData::GPUArray(data.sum()),
+                Some(axis) => ArrayData::GPUArray(data.sum_axis(axis as i32, keep_dim)),
+            },
         }
     }
     pub fn t(&self) -> ArrayData<EType> {
         if self.ndim() != 2 {
-            panic!("Can only transpose a rank-2 tensor, got rank-{}", self.ndim());
+            panic!(
+                "Can only transpose a rank-2 tensor, got rank-{}",
+                self.ndim()
+            );
         }
         match self {
-            ArrayData::CPUArray(data) => {
-                ArrayData::CPUArray(data.to_owned().into_dimensionality::<Ix2>().unwrap().t().to_owned().into_dyn())
+            ArrayData::CPUArray(data) => ArrayData::CPUArray(
+                data.to_owned()
+                    .into_dimensionality::<Ix2>()
+                    .unwrap()
+                    .t()
+                    .to_owned()
+                    .into_dyn(),
+            ),
+            ArrayData::GPUArray(_) => {
+                todo!("Transpose GPUArray is not implemented yet")
             }
-            ArrayData::GPUArray(_) => { todo!("Transpose GPUArray is not implemented yet") }
         }
     }
 }
 
-impl<EType> Add for &ArrayData<EType>
-    where
-        EType: TensoriaOps + Clone + Pod + Default + Debug,
-        Vec<EType>: GetType {
-    type Output = ArrayData<EType>;
+macro_rules! impl_bin_op {
+    ($trait:ident, $trait_method:ident, $array_method:ident) => {
+        impl<EType> std::ops::$trait<&Self> for ArrayData<EType>
+        where
+            EType: TensoriaOps + Clone + Pod + Default + Debug,
+            Vec<EType>: GetType,
+        {
+            type Output = ArrayData<EType>;
 
-    fn add(self, rhs: Self) -> Self::Output {
-        self.arr_add(&rhs)
-    }
+            fn $trait_method(self, rhs: &Self) -> Self::Output {
+                self.$array_method(rhs)
+            }
+        }
+
+        impl<EType> std::ops::$trait for &ArrayData<EType>
+        where
+            EType: TensoriaOps + Clone + Pod + Default + Debug,
+            Vec<EType>: GetType,
+        {
+            type Output = ArrayData<EType>;
+
+            fn $trait_method(self, rhs: Self) -> Self::Output {
+                self.$array_method(rhs)
+            }
+        }
+
+        impl<EType> std::ops::$trait<ArrayData<EType>> for &ArrayData<EType>
+        where
+            EType: TensoriaOps + Clone + Pod + Default + Debug,
+            Vec<EType>: GetType,
+        {
+            type Output = ArrayData<EType>;
+
+            fn $trait_method(self, rhs: ArrayData<EType>) -> Self::Output {
+                self.$array_method(&rhs)
+            }
+        }
+
+        impl<EType> std::ops::$trait for ArrayData<EType>
+        where
+            EType: TensoriaOps + Clone + Pod + Default + Debug,
+            Vec<EType>: GetType,
+        {
+            type Output = ArrayData<EType>;
+
+            fn $trait_method(self, rhs: Self) -> Self::Output {
+                self.$array_method(&rhs)
+            }
+        }
+
+        impl<EType> std::ops::$trait<EType> for &ArrayData<EType>
+        where
+            EType: TensoriaOps + Clone + Pod + Default + Debug,
+            Vec<EType>: GetType,
+        {
+            type Output = ArrayData<EType>;
+
+            fn $trait_method(self, rhs: EType) -> Self::Output {
+                let scalar = match self {
+                    ArrayData::CPUArray(_) => ArrayData::new_cpu([1], vec![rhs]).unwrap(),
+                    ArrayData::GPUArray(_) => ArrayData::new_gpu([1], vec![rhs]).unwrap(),
+                };
+                self.$array_method(&scalar)
+            }
+        }
+
+        impl<EType> std::ops::$trait<EType> for ArrayData<EType>
+        where
+            EType: TensoriaOps + Clone + Pod + Default + Debug,
+            Vec<EType>: GetType,
+        {
+            type Output = ArrayData<EType>;
+
+            fn $trait_method(self, rhs: EType) -> Self::Output {
+                let scalar = match self {
+                    ArrayData::CPUArray(_) => ArrayData::new_cpu([1], vec![rhs]).unwrap(),
+                    ArrayData::GPUArray(_) => ArrayData::new_gpu([1], vec![rhs]).unwrap(),
+                };
+                self.$array_method(&scalar)
+            }
+        }
+    };
 }
 
-impl<EType> Div for &ArrayData<EType>
-    where
-        EType: TensoriaOps + Clone + Pod + Default + Debug,
-        Vec<EType>: GetType {
-    type Output = ArrayData<EType>;
-
-    fn div(self, rhs: Self) -> Self::Output {
-        self.arr_div(&rhs)
-    }
-}
-
-impl<EType> Mul for &ArrayData<EType>
-    where
-        EType: TensoriaOps + Clone + Pod + Default + Debug,
-        Vec<EType>: GetType {
-    type Output = ArrayData<EType>;
-
-    fn mul(self, rhs: Self) -> Self::Output {
-        self.arr_mul(&rhs)
-    }
-}
-
-impl<EType> Sub for &ArrayData<EType>
-    where
-        EType: TensoriaOps + Clone + Pod + Default + Debug,
-        Vec<EType>: GetType {
-    type Output = ArrayData<EType>;
-
-    fn sub(self, rhs: Self) -> Self::Output {
-        self.arr_sub(&rhs)
-    }
-}
+impl_bin_op!(Add, add, arr_add);
+impl_bin_op!(Div, div, arr_div);
+impl_bin_op!(Mul, mul, arr_mul);
+impl_bin_op!(Sub, sub, arr_sub);

@@ -1,5 +1,6 @@
 use std::fmt::Debug;
 use std::ops::{Add, Div, Mul, Sub};
+use std::sync::RwLockReadGuard;
 use std::sync::{Arc, RwLock};
 
 use bytemuck::Pod;
@@ -27,34 +28,49 @@ pub struct Tensor<EType> {
 
 type UnOpFn<EType> = Box<dyn FnOnce(&ArrayData<EType>) -> ArrayData<EType>>;
 type BinOpFn<EType> = Box<dyn FnOnce(&ArrayData<EType>, &ArrayData<EType>) -> ArrayData<EType>>;
-type GradFn<EType> = fn(old_grad: &ArrayData<EType>, parent_grad: &ArrayData<EType>, parent: &Arc<RwLock<TensorPointer<EType>>>) -> ArrayData<EType>;
+type GradFn<EType> = fn(
+    old_grad: &ArrayData<EType>,
+    parent_grad: &ArrayData<EType>,
+    parent: &Arc<RwLock<TensorPointer<EType>>>,
+) -> ArrayData<EType>;
 
 impl<EType> Tensor<EType>
-    where
-        EType: TensoriaOps + Clone + Pod + Default + Debug,
-        Vec<EType>: GetType {
-    pub fn new<S: AsRef<[usize]>>(shape: S, data: Vec<EType>) -> Result<Tensor<EType>, TensoriaError> {
-        let tp = Arc::new(RwLock::new(
-            TensorPointer {
-                data: ArrayData::new_cpu(shape, data)?,
-                grad: None,
-                grad_fn: None,
-                deps: Default::default(),
-            }
-        ));
-        return Ok(Self { id: Uuid::new_v4(), tp, requires_grad: false });
+where
+    EType: TensoriaOps + Clone + Pod + Default + Debug,
+    Vec<EType>: GetType,
+{
+    pub fn new<S: AsRef<[usize]>>(
+        shape: S,
+        data: Vec<EType>,
+    ) -> Result<Tensor<EType>, TensoriaError> {
+        let tp = Arc::new(RwLock::new(TensorPointer {
+            data: ArrayData::new_cpu(shape, data)?,
+            grad: None,
+            grad_fn: None,
+            deps: Default::default(),
+        }));
+        return Ok(Self {
+            id: Uuid::new_v4(),
+            tp,
+            requires_grad: false,
+        });
     }
 
-    pub fn new_gpu<S: AsRef<[usize]>>(shape: S, data: Vec<EType>) -> Result<Tensor<EType>, TensoriaError> {
-        let tp = Arc::new(RwLock::new(
-            TensorPointer {
-                data: ArrayData::new_gpu(shape, data)?,
-                grad: None,
-                grad_fn: None,
-                deps: Default::default(),
-            }
-        ));
-        return Ok(Self { id: Uuid::new_v4(), tp, requires_grad: false });
+    pub fn new_gpu<S: AsRef<[usize]>>(
+        shape: S,
+        data: Vec<EType>,
+    ) -> Result<Tensor<EType>, TensoriaError> {
+        let tp = Arc::new(RwLock::new(TensorPointer {
+            data: ArrayData::new_gpu(shape, data)?,
+            grad: None,
+            grad_fn: None,
+            deps: Default::default(),
+        }));
+        return Ok(Self {
+            id: Uuid::new_v4(),
+            tp,
+            requires_grad: false,
+        });
     }
 
     pub fn backward(&self) -> Result<(), TensoriaError> {
@@ -66,8 +82,8 @@ impl<EType> Tensor<EType>
         let num_el = shape.iter().fold(1, |x, y| x * y);
         let initial_grad_vec = vec![EType::from(1.).unwrap(); num_el];
         let initial_grad = match self.device() {
-            Device::CPU => { ArrayData::new_cpu(shape, initial_grad_vec)? }
-            Device::GPU => { ArrayData::new_gpu(shape, initial_grad_vec)? }
+            Device::CPU => ArrayData::new_cpu(shape, initial_grad_vec)?,
+            Device::GPU => ArrayData::new_gpu(shape, initial_grad_vec)?,
         };
         self.tp.write().unwrap().grad = Some(initial_grad);
 
@@ -84,8 +100,8 @@ impl<EType> Tensor<EType>
             let new_grad = {
                 let grad_fn_opt = &dep.read().unwrap().grad_fn;
                 if let (Some(old_grad), Some(parent_grad), Some(grad_fn)) =
-                    (&dep.read().unwrap().grad, parent_grad_opt, grad_fn_opt) {
-
+                    (&dep.read().unwrap().grad, parent_grad_opt, grad_fn_opt)
+                {
                     // calculate new grad for dep
                     let new_grad = grad_fn(old_grad, parent_grad, tp);
                     Some(new_grad)
@@ -100,8 +116,8 @@ impl<EType> Tensor<EType>
 
     pub fn shape(&self) -> Vec<usize> {
         match &self.tp.read().unwrap().data {
-            ArrayData::CPUArray(arr) => { arr.shape().to_vec() }
-            ArrayData::GPUArray(arr) => { arr.shape.to_vec() }
+            ArrayData::CPUArray(arr) => arr.shape().to_vec(),
+            ArrayData::GPUArray(arr) => arr.shape.to_vec(),
         }
     }
 
@@ -117,12 +133,8 @@ impl<EType> Tensor<EType>
             let numel = shape.iter().fold(1, |x, y| x * y);
             let zeros = vec![EType::default(); numel];
             let zero_grad = Some(match &self.tp.read().unwrap().data {
-                ArrayData::CPUArray(_) => {
-                    ArrayData::new_cpu(&shape, zeros).unwrap()
-                }
-                ArrayData::GPUArray(_) => {
-                    ArrayData::new_gpu(shape, zeros).unwrap()
-                }
+                ArrayData::CPUArray(_) => ArrayData::new_cpu(&shape, zeros).unwrap(),
+                ArrayData::GPUArray(_) => ArrayData::new_gpu(shape, zeros).unwrap(),
             });
 
             self.tp.write().unwrap().grad = zero_grad;
@@ -140,8 +152,8 @@ impl<EType> Tensor<EType>
     pub fn to_vec(&self) -> Vec<EType> {
         let data_ref = &self.tp.read().unwrap().data;
         match data_ref {
-            ArrayData::CPUArray(data) => { data.to_owned().into_raw_vec() }
-            ArrayData::GPUArray(data) => { data.to_vec() }
+            ArrayData::CPUArray(data) => data.to_owned().into_raw_vec(),
+            ArrayData::GPUArray(data) => data.to_vec(),
         }
     }
 
@@ -151,21 +163,19 @@ impl<EType> Tensor<EType>
 
     pub fn grad(&self) -> Option<ArrayData<EType>> {
         match &self.tp.read().unwrap().grad {
-            None => { None }
-            Some(data) => { Some(data.clone()) }
+            None => None,
+            Some(data) => Some(data.clone()),
         }
     }
 
     pub fn grad_vec(&self) -> Option<Vec<EType>> {
         let data_ref = &self.tp.read().unwrap().grad;
         match data_ref {
-            None => { None }
-            Some(arr) => {
-                match arr {
-                    ArrayData::CPUArray(val) => { Some(val.to_owned().into_raw_vec()) }
-                    ArrayData::GPUArray(val) => { Some(val.to_vec()) }
-                }
-            }
+            None => None,
+            Some(arr) => match arr {
+                ArrayData::CPUArray(val) => Some(val.to_owned().into_raw_vec()),
+                ArrayData::GPUArray(val) => Some(val.to_vec()),
+            },
         }
     }
 
@@ -178,7 +188,11 @@ impl<EType> Tensor<EType>
                 let mut new_arr = Self {
                     id: self.id,
                     tp: Arc::new(RwLock::new(TensorPointer {
-                        data: ArrayData::new_gpu(arr.shape().to_vec(), arr.as_standard_layout().as_slice().unwrap().to_vec()).unwrap(),
+                        data: ArrayData::new_gpu(
+                            arr.shape().to_vec(),
+                            arr.as_standard_layout().as_slice().unwrap().to_vec(),
+                        )
+                        .unwrap(),
                         grad: None,
                         grad_fn: self.tp.read().unwrap().grad_fn,
                         deps: vec![],
@@ -189,9 +203,7 @@ impl<EType> Tensor<EType>
                 new_arr.set_requires_grad(self.requires_grad);
                 Ok(new_arr)
             }
-            ArrayData::GPUArray(_) => {
-                Err(TensoriaError::AlreadyGPUTensor {})
-            }
+            ArrayData::GPUArray(_) => Err(TensoriaError::AlreadyGPUTensor {}),
         };
         res
     }
@@ -203,19 +215,20 @@ impl<EType> Tensor<EType>
 }
 
 impl<EType> Tensor<EType>
-    where
-        EType: TensoriaOps + Clone + Pod + Default + Debug,
-        Vec<EType>: GetType {
+where
+    EType: TensoriaOps + Clone + Pod + Default + Debug,
+    Vec<EType>: GetType,
+{
     pub fn zeros<Shape: AsRef<[usize]>>(_shape: Shape) -> Self {
         todo!()
     }
 }
 
-
 impl<EType> Tensor<EType>
-    where
-        EType: TensoriaOps + Clone + Pod + Default + Debug,
-        Vec<EType>: GetType {
+where
+    EType: TensoriaOps + Clone + Pod + Default + Debug,
+    Vec<EType>: GetType,
+{
     pub fn matmul(&self, other: &Tensor<EType>) -> Self {
         let lgf: Option<GradFn<EType>> = Some(|lg, og, parent| {
             let parent = &parent.read().unwrap();
@@ -227,19 +240,19 @@ impl<EType> Tensor<EType>
             let lhs = &parent.deps[0].read().unwrap().data;
             rg.add(&lhs.t().matmul(&og))
         });
-        let add_fn: BinOpFn<EType> = Box::new(|a, b| { a.matmul(&b) });
+        let add_fn: BinOpFn<EType> = Box::new(|a, b| a.matmul(&b));
         self.tensor_binop(other, add_fn, lgf, rgf)
     }
     pub fn tensor_add(&self, other: &Tensor<EType>) -> Self {
         let lgf: Option<GradFn<EType>> = Some(|lg, og, _| {
-            let og = &gradient_broadcasting(lg, og);
+            let og = gradient_broadcasting(lg, og);
             lg.add(og)
         });
         let rgf: Option<GradFn<EType>> = Some(|rg, og, _| {
-            let og = &gradient_broadcasting(rg, og);
+            let og = gradient_broadcasting(rg, og);
             rg.add(&og)
         });
-        let add_fn: BinOpFn<EType> = Box::new(|a, b| { a.add(&b) });
+        let add_fn: BinOpFn<EType> = Box::new(|a, b| a.add(b));
         self.tensor_binop(other, add_fn, lgf, rgf)
     }
 
@@ -256,18 +269,14 @@ impl<EType> Tensor<EType>
             let lhs = &parent.deps[0].read().unwrap().data;
             rg.add(&lhs.mul(&og))
         });
-        let mul_fn: BinOpFn<EType> = Box::new(|a, b| { a.mul(&b) });
+        let mul_fn: BinOpFn<EType> = Box::new(|a, b| a.mul(b));
         self.tensor_binop(other, mul_fn, lgf, rgf)
     }
 
     pub fn tensor_div(&self, other: &Tensor<EType>) -> Self {
-        let lgf: Option<GradFn<EType>> = Some(|_lg, _og, _parent| {
-            todo!()
-        });
-        let rgf: Option<GradFn<EType>> = Some(|_rg, _og, _parent| {
-            todo!()
-        });
-        let div_fn: BinOpFn<EType> = Box::new(|a, b| { a.div(b) });
+        let lgf: Option<GradFn<EType>> = Some(|_lg, _og, _parent| todo!());
+        let rgf: Option<GradFn<EType>> = Some(|_rg, _og, _parent| todo!());
+        let div_fn: BinOpFn<EType> = Box::new(|a, b| a.div(b));
         self.tensor_binop(other, div_fn, lgf, rgf)
     }
 
@@ -280,14 +289,12 @@ impl<EType> Tensor<EType>
             let og = gradient_broadcasting(rg, og);
             rg.sub(&og)
         });
-        let sub_fn: BinOpFn<EType> = Box::new(|a, b| { a.sub(&b) });
+        let sub_fn: BinOpFn<EType> = Box::new(|a, b| a.sub(b));
         self.tensor_binop(other, sub_fn, lgf, rgf)
     }
 
     pub fn mean(&self, axis: Option<usize>, keep_dim: bool) -> Self {
-        let mean_fn: UnOpFn<EType> = Box::new(move |data| {
-            data.mean(axis, keep_dim)
-        });
+        let mean_fn: UnOpFn<EType> = Box::new(move |data| data.mean(axis, keep_dim));
 
         let gf: Option<GradFn<EType>> = Some(move |g, og, parent| {
             let shape = g.shape();
@@ -295,8 +302,8 @@ impl<EType> Tensor<EType>
             // Get axis data, that is the second dependency of the parent, i.e., deps[1].
             // it will be -1 if no axis is specified and greater than or equals to zero otherwise.
             let axis = match &parent.read().unwrap().deps[1].read().unwrap().data {
-                ArrayData::CPUArray(ax) => { ax.first().unwrap().to_owned() }
-                ArrayData::GPUArray(ax) => { ax.to_vec()[0] }
+                ArrayData::CPUArray(ax) => ax.first().unwrap().to_owned(),
+                ArrayData::GPUArray(ax) => ax.to_vec()[0],
             };
 
             let axis_is_specified = axis > EType::from(-1).unwrap();
@@ -319,22 +326,21 @@ impl<EType> Tensor<EType>
         // Hacky way to pass axis info to tensor's dependency, since GradFn is a function (not a closure)
         // and we want to avoid capturing outer scope of `gf`.
         let t_axis = match axis {
-            None => { Self::new([1], vec![EType::from(-1).unwrap()]) }
-            Some(axis) => { Self::new([1], vec![EType::from(axis).unwrap()]) }
-        }.unwrap();
+            None => Self::new([1], vec![EType::from(-1).unwrap()]),
+            Some(axis) => Self::new([1], vec![EType::from(axis).unwrap()]),
+        }
+        .unwrap();
         res.tp.write().unwrap().deps.push(t_axis.tp);
         res
     }
 
     pub fn sum(&self, axis: Option<usize>, keep_dim: bool) -> Self {
-        let sum_fn: UnOpFn<EType> = Box::new(move |data| {
-            data.sum(axis, keep_dim)
-        });
+        let sum_fn: UnOpFn<EType> = Box::new(move |data| data.sum(axis, keep_dim));
 
         let gf: Option<GradFn<EType>> = Some(|g, og, parent| {
             let axis = match &parent.read().unwrap().deps[1].read().unwrap().data {
-                ArrayData::CPUArray(ax) => { ax.first().unwrap().to_owned() }
-                ArrayData::GPUArray(ax) => { ax.to_vec()[0] }
+                ArrayData::CPUArray(ax) => ax.first().unwrap().to_owned(),
+                ArrayData::GPUArray(ax) => ax.to_vec()[0],
             };
             let axis_is_specified = axis > EType::from(-1).unwrap();
             if axis_is_specified {
@@ -342,7 +348,7 @@ impl<EType> Tensor<EType>
                 let og_broadcast = gradient_broadcasting(g, &og);
                 return g.add(&og_broadcast);
             } else {
-                return g.add(&og);
+                return g.add(og);
             }
         });
         let res = self.tensor_unop(sum_fn, gf);
@@ -350,15 +356,17 @@ impl<EType> Tensor<EType>
         // Hacky way to pass axis info to tensor's dependency, since GradFn is a function (not a closure)
         // and we want to avoid capturing outer scope of `gf`.
         let t_axis = match axis {
-            None => { Self::new([1], vec![EType::from(-1).unwrap()]) }
-            Some(axis) => { Self::new([1], vec![EType::from(axis).unwrap()]) }
-        }.unwrap();
+            None => Self::new([1], vec![EType::from(-1).unwrap()]),
+            Some(axis) => Self::new([1], vec![EType::from(axis).unwrap()]),
+        }
+        .unwrap();
         res.tp.write().unwrap().deps.push(t_axis.tp);
         res
     }
 
     fn tensor_binop(
-        &self, other: &Tensor<EType>,
+        &self,
+        other: &Tensor<EType>,
         binop_fn: BinOpFn<EType>,
         l_grad_fn: Option<GradFn<EType>>,
         r_grad_fn: Option<GradFn<EType>>,
@@ -379,16 +387,16 @@ impl<EType> Tensor<EType>
             grad_fn: None,
         }));
 
-        let mut res = Self { id: Uuid::new_v4(), tp, requires_grad };
+        let mut res = Self {
+            id: Uuid::new_v4(),
+            tp,
+            requires_grad,
+        };
         res.set_requires_grad(requires_grad);
         res
     }
 
-    fn tensor_unop(
-        &self,
-        unop_fn: UnOpFn<EType>,
-        grad_fn: Option<GradFn<EType>>,
-    ) -> Self {
+    fn tensor_unop(&self, unop_fn: UnOpFn<EType>, grad_fn: Option<GradFn<EType>>) -> Self {
         self.tp.write().unwrap().grad_fn = grad_fn;
 
         let data = &self.tp.read().unwrap().data;
@@ -403,16 +411,24 @@ impl<EType> Tensor<EType>
             grad_fn: None,
         }));
 
-        let mut res = Self { id: Uuid::new_v4(), tp, requires_grad };
+        let mut res = Self {
+            id: Uuid::new_v4(),
+            tp,
+            requires_grad,
+        };
         res.set_requires_grad(requires_grad);
         res
     }
 }
 
-fn gradient_broadcasting<EType>(self_grad: &ArrayData<EType>, out_grad: &ArrayData<EType>) -> ArrayData<EType>
-    where
-        EType: TensoriaOps + Clone + Pod + Default + Debug,
-        Vec<EType>: GetType {
+fn gradient_broadcasting<EType>(
+    self_grad: &ArrayData<EType>,
+    out_grad: &ArrayData<EType>,
+) -> ArrayData<EType>
+where
+    EType: TensoriaOps + Clone + Pod + Default + Debug,
+    Vec<EType>: GetType,
+{
     // Sum out added dims
     let mut out_grad = out_grad.clone();
     let ndims_added = out_grad.ndim() as i32 - self_grad.ndim() as i32;
@@ -429,48 +445,93 @@ fn gradient_broadcasting<EType>(self_grad: &ArrayData<EType>, out_grad: &ArrayDa
     out_grad
 }
 
-impl<EType> Add for &Tensor<EType>
-    where EType: TensoriaOps + Clone + Pod + Default + Debug, Vec<EType>: GetType {
-    type Output = Tensor<EType>;
+/// Macro for several binary operators, so it is easier to implement it for both
+/// op(Self, &Self) and op(&Self, &Self)
+macro_rules! impl_bin_op {
+    ($trait:ident, $trait_method:ident, $tensor_method:ident) => {
+        impl<EType> std::ops::$trait<&Self> for Tensor<EType>
+        where
+            EType: TensoriaOps + Clone + Pod + Default + Debug,
+            Vec<EType>: GetType,
+        {
+            type Output = Tensor<EType>;
 
-    fn add(self, rhs: Self) -> Self::Output {
-        self.tensor_add(rhs)
-    }
+            fn $trait_method(self, rhs: &Self) -> Self::Output {
+                self.$tensor_method(rhs)
+            }
+        }
+
+        impl<EType> std::ops::$trait for &Tensor<EType>
+        where
+            EType: TensoriaOps + Clone + Pod + Default + Debug,
+            Vec<EType>: GetType,
+        {
+            type Output = Tensor<EType>;
+
+            fn $trait_method(self, rhs: Self) -> Self::Output {
+                self.$tensor_method(rhs)
+            }
+        }
+
+        impl<EType> std::ops::$trait<Tensor<EType>> for &Tensor<EType>
+        where
+            EType: TensoriaOps + Clone + Pod + Default + Debug,
+            Vec<EType>: GetType,
+        {
+            type Output = Tensor<EType>;
+
+            fn $trait_method(self, rhs: Tensor<EType>) -> Self::Output {
+                self.$tensor_method(&rhs)
+            }
+        }
+
+        impl<EType> std::ops::$trait for Tensor<EType>
+        where
+            EType: TensoriaOps + Clone + Pod + Default + Debug,
+            Vec<EType>: GetType,
+        {
+            type Output = Tensor<EType>;
+
+            fn $trait_method(self, rhs: Self) -> Self::Output {
+                self.$tensor_method(&rhs)
+            }
+        }
+
+        impl<'a, EType> std::ops::$trait<Tensor<EType>> for RwLockReadGuard<'a, Tensor<EType>>
+        where
+            EType: TensoriaOps + Clone + Pod + Default + Debug,
+            Vec<EType>: GetType,
+        {
+            type Output = Tensor<EType>;
+
+            fn $trait_method(self, rhs: Tensor<EType>) -> Self::Output {
+                self.$tensor_method(&rhs)
+            }
+        }
+
+        impl<'a, EType> std::ops::$trait<&RwLockReadGuard<'a, Tensor<EType>>> for Tensor<EType>
+        where
+            EType: TensoriaOps + Clone + Pod + Default + Debug,
+            Vec<EType>: GetType,
+        {
+            type Output = Tensor<EType>;
+
+            fn $trait_method(self, rhs: &RwLockReadGuard<'a, Tensor<EType>>) -> Self::Output {
+                self.$tensor_method(&rhs)
+            }
+        }
+    };
 }
 
-impl<EType> Div for &Tensor<EType>
-    where EType: TensoriaOps + Clone + Pod + Default + Debug, Vec<EType>: GetType {
-    type Output = Tensor<EType>;
-
-    fn div(self, rhs: Self) -> Self::Output {
-        self.tensor_div(rhs)
-    }
-}
-
-
-impl<EType> Mul for &Tensor<EType>
-    where EType: TensoriaOps + Clone + Pod + Default + Debug, Vec<EType>: GetType {
-    type Output = Tensor<EType>;
-
-    fn mul(self, rhs: Self) -> Self::Output {
-        self.tensor_mul(rhs)
-    }
-}
-
-impl<EType> Sub for &Tensor<EType>
-    where EType: TensoriaOps + Clone + Pod + Default + Debug, Vec<EType>: GetType {
-    type Output = Tensor<EType>;
-
-    fn sub(self, rhs: Self) -> Self::Output {
-        self.tensor_sub(rhs)
-    }
-}
-
+impl_bin_op!(Add, add, tensor_add);
+impl_bin_op!(Div, div, tensor_div);
+impl_bin_op!(Mul, mul, tensor_mul);
+impl_bin_op!(Sub, sub, tensor_sub);
 
 /// The suites are solely to test tensor's autograd mechanism
 #[cfg(test)]
 mod test {
-    use std::ops::{Mul, Sub};
+    use std::ops::Sub;
 
     use crate::error::TensoriaError;
     use crate::tensor::{Device, Tensor};
@@ -509,7 +570,6 @@ mod test {
         assert_eq!(y.grad_vec(), Some(vec![2., 2.]));
         Ok(())
     }
-
 
     #[test]
     fn sub() -> Result<(), TensoriaError> {
@@ -557,7 +617,7 @@ mod test {
         x.set_requires_grad(true);
 
         let y = Tensor::new([2, 2], vec![2, 3, 4, 5])?;
-        let res = x.mul(&y);
+        let res = &x * y;
 
         res.backward()?;
         assert_eq!(x.grad_vec().unwrap(), vec![2, 3, 4, 5]);
@@ -594,7 +654,6 @@ mod test {
         assert_eq!(y.grad_vec(), Some(vec![4, 6]));
         Ok(())
     }
-
 
     #[test]
     fn mean() -> Result<(), TensoriaError> {

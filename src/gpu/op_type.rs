@@ -16,8 +16,15 @@ macro_rules! define_elementwise_binop {
     ($struct_name: ident, $binop_stmt: expr) => {
         pub struct $struct_name {}
         impl Shader for $struct_name {
-            fn shader_path(&self) -> String { "binop.wgsl".into() }
-            fn prepare<T>(&self, operands: Vec<&GPUArray<T>>, output: &GPUArray<T>, params: &mut Context) -> (u32, u32, u32) {
+            fn shader_path(&self) -> String {
+                "binop.wgsl".into()
+            }
+            fn prepare<T>(
+                &self,
+                operands: Vec<&GPUArray<T>>,
+                output: &GPUArray<T>,
+                params: &mut Context,
+            ) -> (u32, u32, u32) {
                 prepare_binop_broadcast_shader(operands, output, params, $binop_stmt)
             }
         }
@@ -28,8 +35,15 @@ macro_rules! define_reduce_to_scalar {
     ($struct_name: ident, $reduction_stmt:expr, $postproc_stmt:expr) => {
         pub struct $struct_name {}
         impl Shader for $struct_name {
-            fn shader_path(&self) -> String { "reduce_to_scalar.wgsl".into() }
-            fn prepare<T>(&self, operands: Vec<&GPUArray<T>>, output: &GPUArray<T>, params: &mut Context) -> (u32, u32, u32) {
+            fn shader_path(&self) -> String {
+                "reduce_to_scalar.wgsl".into()
+            }
+            fn prepare<T>(
+                &self,
+                operands: Vec<&GPUArray<T>>,
+                output: &GPUArray<T>,
+                params: &mut Context,
+            ) -> (u32, u32, u32) {
                 prepare_reduction_shader(operands, output, params, $reduction_stmt, $postproc_stmt)
             }
         }
@@ -41,9 +55,12 @@ define_elementwise_binop!(Mul, "out = lhs * rhs;");
 define_elementwise_binop!(Sub, "out = lhs - rhs;");
 define_elementwise_binop!(Div, "out = lhs / rhs;");
 
-define_reduce_to_scalar!(Mean, "out = lhs + rhs;", "out = out / output_type(input_len);");
+define_reduce_to_scalar!(
+    Mean,
+    "out = lhs + rhs;",
+    "out = out / output_type(input_len);"
+);
 define_reduce_to_scalar!(Sum, "out = lhs + rhs;", "");
-
 
 pub struct MatMul {}
 
@@ -58,7 +75,6 @@ impl Shader for MatMul {
         output: &GPUArray<T>,
         params: &mut Context,
     ) -> (u32, u32, u32) {
-        let out_shape = &output.shape;
         let m = operands[0].shape[0];
         let n = operands[1].shape[1];
         let k = operands[1].shape[0];
@@ -93,7 +109,12 @@ impl Shader for Slice {
         "slice.wgsl".into()
     }
 
-    fn prepare<T>(&self, operands: Vec<&GPUArray<T>>, output: &GPUArray<T>, params: &mut Context) -> (u32, u32, u32) {
+    fn prepare<T>(
+        &self,
+        operands: Vec<&GPUArray<T>>,
+        output: &GPUArray<T>,
+        params: &mut Context,
+    ) -> (u32, u32, u32) {
         params.insert("input_type", &operands[0].data_type.wgsl_type());
         params.insert("indices_type", &operands[1].data_type.wgsl_type());
         params.insert("output_type", &output.data_type.wgsl_type());
@@ -101,13 +122,19 @@ impl Shader for Slice {
         params.insert("input_shape_csv", &vec_to_csv(&output.shape));
         params.insert("input_strides_csv", &vec_to_csv(&operands[0].strides));
         params.insert("input_ndim", &operands[0].shape.len());
-        params.insert("indices_len", &operands[1].shape.iter().fold(1, |x, y| x * y));
+        params.insert(
+            "indices_len",
+            &operands[1].shape.iter().fold(1, |x, y| x * y),
+        );
         params.insert("output_shape_csv", &vec_to_csv(&output.shape));
         params.insert("output_strides_csv", &vec_to_csv(&output.strides));
         params.insert("output_ndim", &output.shape.len());
         params.insert("output_len", &output.shape.iter().fold(1, |x, y| x * y));
         params.insert("slicing_axis", &self.slice_axis);
-        params.insert("nd_index_init", &vec_to_csv(&vec![0; operands[0].shape.len()]));
+        params.insert(
+            "nd_index_init",
+            &vec_to_csv(&vec![0; operands[0].shape.len()]),
+        );
 
         let local_size_x = 256;
         let out_shape = &output.shape;
@@ -125,8 +152,11 @@ fn vec_to_csv(shape: &Vec<usize>) -> String {
         .join(",")
 }
 
-
-fn generate_idx_code(idx_var_name: &str, shape: &Vec<usize>, adjusted_strides: &Vec<usize>) -> String {
+fn generate_idx_code(
+    idx_var_name: &str,
+    shape: &Vec<usize>,
+    adjusted_strides: &Vec<usize>,
+) -> String {
     let mut code = String::new();
     let mut division_products = vec![1; shape.len()];
 
@@ -137,7 +167,10 @@ fn generate_idx_code(idx_var_name: &str, shape: &Vec<usize>, adjusted_strides: &
 
     let mut terms = Vec::new();
     for i in 0..shape.len() {
-        let term = format!("((idx / {}u) % {}u) * {}u", division_products[i], shape[i], adjusted_strides[i]);
+        let term = format!(
+            "((idx / {}u) % {}u) * {}u",
+            division_products[i], shape[i], adjusted_strides[i]
+        );
         terms.push(term);
     }
 
@@ -150,16 +183,26 @@ fn generate_idx_code(idx_var_name: &str, shape: &Vec<usize>, adjusted_strides: &
 /// TODO: Handle specific case:
 ///     - tensor-scalar
 ///     - scalar-tensor
-fn prepare_binop_broadcast_shader<T>(operands: Vec<&GPUArray<T>>, output: &GPUArray<T>, params: &mut Context, binop_stmt: &str) -> (u32, u32, u32) {
+fn prepare_binop_broadcast_shader<T>(
+    operands: Vec<&GPUArray<T>>,
+    output: &GPUArray<T>,
+    params: &mut Context,
+    binop_stmt: &str,
+) -> (u32, u32, u32) {
     params.insert("input_0_type", &operands[0].data_type.wgsl_type());
     params.insert("input_1_type", &operands[1].data_type.wgsl_type());
     params.insert("output_0_type", &output.data_type.wgsl_type());
 
     let (shape0, shape1) = (&operands[0].shape, &operands[1].shape);
-    let (strides1, strides2) = (&operands[0].strides, &operands[1].strides, );
+    let (strides1, strides2) = (&operands[0].strides, &operands[1].strides);
 
     let (adj_shape0, adj_shape1, adj_strides0, adj_strides1) = if shape0 == shape1 {
-        (shape0.clone(), shape1.clone(), strides1.clone(), strides2.clone())
+        (
+            shape0.clone(),
+            shape1.clone(),
+            strides1.clone(),
+            strides2.clone(),
+        )
     } else {
         compute_broadcasted_shape_and_strides(&shape0, &shape1, &strides1, &strides2)
     };
@@ -214,7 +257,13 @@ fn prepare_binop_broadcast_shader<T>(operands: Vec<&GPUArray<T>>, output: &GPUAr
     (num_workgroups_x, num_workgroups_y, 1)
 }
 
-fn prepare_reduction_shader<T>(operands: Vec<&GPUArray<T>>, output: &GPUArray<T>, params: &mut Context, reduction_stmt: &str, postproc_stmt: &str) -> (u32, u32, u32) {
+fn prepare_reduction_shader<T>(
+    operands: Vec<&GPUArray<T>>,
+    output: &GPUArray<T>,
+    params: &mut Context,
+    reduction_stmt: &str,
+    postproc_stmt: &str,
+) -> (u32, u32, u32) {
     let input_shape = &operands[0].shape;
     let input_len = input_shape.iter().fold(1, |x, y| x * y);
     params.insert("input_type", &operands[0].data_type.wgsl_type());

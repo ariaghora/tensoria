@@ -4,12 +4,12 @@ use std::ops::Add;
 use std::sync::{Arc, RwLock};
 
 use bytemuck::Pod;
-use include_dir::{Dir, include_dir};
+use include_dir::{include_dir, Dir};
 use lazy_static::lazy_static;
 use num_traits::{Num, NumCast};
 use uuid::Uuid;
-use wgpu::{BindGroupEntry, ComputePipeline};
 use wgpu::util::DeviceExt;
+use wgpu::{BindGroupEntry, ComputePipeline};
 
 use crate::gpu::context::{Executor, GPUContext};
 use crate::gpu::op_type::{MatMul, Mean, Shader, Slice, Sum};
@@ -67,8 +67,8 @@ pub struct GPUArray<T> {
 }
 
 impl<T: Default + Clone + Pod + Default + Debug + Num + NumCast> Clone for GPUArray<T>
-    where
-        Vec<T>: GetType,
+where
+    Vec<T>: GetType,
 {
     fn clone(&self) -> Self {
         if let Some(init_data) = &self.init_data {
@@ -172,8 +172,8 @@ pub fn compute_broadcasted_shape_and_strides(
 }
 
 impl<T: Clone + Pod + Default + Debug + Num + NumCast> GPUArray<T>
-    where
-        Vec<T>: GetType,
+where
+    Vec<T>: GetType,
 {
     pub fn new(data: Vec<T>, shape: Vec<usize>) -> Self {
         Self::new_with_ctx(&GLOBAL_CTX, data, shape)
@@ -216,7 +216,8 @@ impl<T: Clone + Pod + Default + Debug + Num + NumCast> GPUArray<T>
     pub fn mean_axis(&self, axis: i32, keep_dim: bool) -> GPUArray<T> {
         let res = self.sum_axis(axis, keep_dim);
         let numel = self.shape[axis as usize];
-        let numel_arr = &Self::new_with_ctx(&self.context, vec![NumCast::from(numel).unwrap()], vec![1]);
+        let numel_arr =
+            &Self::new_with_ctx(&self.context, vec![NumCast::from(numel).unwrap()], vec![1]);
         res / numel_arr
     }
 
@@ -271,15 +272,19 @@ impl<T: Clone + Pod + Default + Debug + Num + NumCast> GPUArray<T>
         for idx in 0..axis_len {
             let slice = self.slice_axis(axis, [idx as i32]);
             res = Some(match res {
-                None => { slice }
-                Some(r) => { r.add(&slice) }
+                None => slice,
+                Some(r) => r.add(&slice),
             })
         }
         let mut res = res.unwrap();
         let new_shape = if keep_dim {
             res.shape.clone()
         } else {
-            res.shape.clone().into_iter().filter(|v| *v != 1).collect::<Vec<usize>>()
+            res.shape
+                .clone()
+                .into_iter()
+                .filter(|v| *v != 1)
+                .collect::<Vec<usize>>()
         };
         res.shape = new_shape;
         res.strides = shape_to_strides(&res.shape);
@@ -287,7 +292,12 @@ impl<T: Clone + Pod + Default + Debug + Num + NumCast> GPUArray<T>
     }
 
     /// General binary operation
-    pub fn bin_op<S: Shader>(&self, other: &GPUArray<T>, out_shape: Vec<usize>, op_type: S) -> GPUArray<T> {
+    pub fn bin_op<S: Shader>(
+        &self,
+        other: &GPUArray<T>,
+        out_shape: Vec<usize>,
+        op_type: S,
+    ) -> GPUArray<T> {
         if self.context_id != other.context_id {
             panic!("cannot do operations on GPUArray from different execution context")
         }
@@ -596,11 +606,10 @@ impl<T: Clone + Pod + Default + Debug + Num + NumCast> GPUArray<T>
     }
 }
 
-/// Macro for several binary operators, so it is easier to implement it for both
-/// op(Self, &Self) and op(&Self, &Self)
 macro_rules! impl_bin_op {
     ($trait:ident, $method:ident, $op:expr) => {
-        impl<T: Clone + Pod + Default + Debug + Num + NumCast> std::ops::$trait<&Self> for GPUArray<T>
+        impl<T: Clone + Pod + Default + Debug + Num + NumCast> std::ops::$trait<&Self>
+            for GPUArray<T>
         where
             Vec<T>: GetType,
         {
@@ -691,6 +700,7 @@ pub fn create_staging_buf<'a, T: bytemuck::Pod + Default + Debug>(
     data
 }
 
+#[allow(unused_imports)]
 mod test {
     use crate::gpu::context::GPUContext;
     use crate::gpu::gpu_array::GPUArray;
