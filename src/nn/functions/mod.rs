@@ -1,21 +1,13 @@
 use crate::gpu::gpu_array::GetType;
-use crate::tensor::{GradFn, Tensor, UnOpFn};
+use crate::tensor::Tensor;
 use crate::traits::TensoriaOps;
 
 pub fn softmax_unstable<EType: TensoriaOps>(x: &Tensor<EType>, axis: usize) -> Tensor<EType>
 where
     Vec<EType>: GetType,
 {
-    let gf: Option<GradFn<EType>> = Some(|_lg, _og, _parent| {
-        // TODO
-        todo!();
-    });
-
-    let unop_fn: UnOpFn<EType> = Box::new(move |arr| {
-        let nominator = arr.exp();
-        &nominator / &nominator.sum(Some(axis), true)
-    });
-    x.tensor_unop(unop_fn, gf)
+    let nom = x.exp();
+    &nom / &nom.sum(Some(axis), true)
 }
 
 #[cfg(test)]

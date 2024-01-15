@@ -14,7 +14,7 @@ use crate::traits::TensoriaOps;
 pub struct TensorPointer<EType> {
     pub(crate) data: ArrayData<EType>,
     grad: Option<ArrayData<EType>>,
-    pub(crate) deps: Vec<Arc<RwLock<TensorPointer<EType>>>>,
+    deps: Vec<Arc<RwLock<TensorPointer<EType>>>>,
     grad_fn: Option<GradFn<EType>>,
 }
 
@@ -292,6 +292,16 @@ where
         });
         let sub_fn: BinOpFn<EType> = Box::new(|a, b| a.sub(b));
         self.tensor_binop(other, sub_fn, lgf, rgf)
+    }
+
+    pub fn exp(&self) -> Self {
+        let exp_fn: UnOpFn<EType> = Box::new(move |data| data.exp());
+        let gf: Option<GradFn<EType>> = Some(|g, og, parent| {
+            let parent = &parent.read().unwrap();
+            let x = &parent.deps[0].read().unwrap().data;
+            g.add(&og.mul(x.exp()))
+        });
+        self.tensor_unop(exp_fn, gf)
     }
 
     pub fn mean(&self, axis: Option<usize>, keep_dim: bool) -> Self {
