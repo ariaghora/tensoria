@@ -150,6 +150,19 @@ where
         }
     }
 
+    pub fn exp(&self) -> ArrayData<EType> {
+        match self {
+            ArrayData::CPUArray(data) => ArrayData::CPUArray(
+                data.mapv(|v| {
+                    let vf = EType::from(EType::to_f32(&v).unwrap().exp()).unwrap();
+                    vf
+                })
+                .into_dyn(),
+            ),
+            ArrayData::GPUArray(_) => todo!(),
+        }
+    }
+
     pub fn matmul(&self, other: &ArrayData<EType>) -> ArrayData<EType> {
         let l_ndim = self.ndim();
         let r_ndim = other.ndim();

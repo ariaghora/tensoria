@@ -2,7 +2,6 @@ pub use std::ops::{Add, Div, Mul, Sub};
 
 pub mod array;
 pub mod error;
-pub mod functions;
 pub mod gpu;
 pub mod nn;
 pub mod optim;

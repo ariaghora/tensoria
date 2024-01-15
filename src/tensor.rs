@@ -14,7 +14,7 @@ use crate::traits::TensoriaOps;
 pub struct TensorPointer<EType> {
     pub(crate) data: ArrayData<EType>,
     grad: Option<ArrayData<EType>>,
-    deps: Vec<Arc<RwLock<TensorPointer<EType>>>>,
+    pub(crate) deps: Vec<Arc<RwLock<TensorPointer<EType>>>>,
     grad_fn: Option<GradFn<EType>>,
 }
 
@@ -26,9 +26,10 @@ pub struct Tensor<EType> {
     requires_grad: bool,
 }
 
-type UnOpFn<EType> = Box<dyn FnOnce(&ArrayData<EType>) -> ArrayData<EType>>;
-type BinOpFn<EType> = Box<dyn FnOnce(&ArrayData<EType>, &ArrayData<EType>) -> ArrayData<EType>>;
-type GradFn<EType> = fn(
+pub(crate) type UnOpFn<EType> = Box<dyn FnOnce(&ArrayData<EType>) -> ArrayData<EType>>;
+pub(crate) type BinOpFn<EType> =
+    Box<dyn FnOnce(&ArrayData<EType>, &ArrayData<EType>) -> ArrayData<EType>>;
+pub(crate) type GradFn<EType> = fn(
     old_grad: &ArrayData<EType>,
     parent_grad: &ArrayData<EType>,
     parent: &Arc<RwLock<TensorPointer<EType>>>,
@@ -364,7 +365,7 @@ where
         res
     }
 
-    fn tensor_binop(
+    pub(crate) fn tensor_binop(
         &self,
         other: &Tensor<EType>,
         binop_fn: BinOpFn<EType>,
@@ -396,7 +397,11 @@ where
         res
     }
 
-    fn tensor_unop(&self, unop_fn: UnOpFn<EType>, grad_fn: Option<GradFn<EType>>) -> Self {
+    pub(crate) fn tensor_unop(
+        &self,
+        unop_fn: UnOpFn<EType>,
+        grad_fn: Option<GradFn<EType>>,
+    ) -> Self {
         self.tp.write().unwrap().grad_fn = grad_fn;
 
         let data = &self.tp.read().unwrap().data;

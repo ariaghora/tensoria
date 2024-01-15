@@ -11,11 +11,13 @@ use crate::gpu::gpu_array::GetType;
 use crate::tensor::Tensor;
 use crate::traits::TensoriaOps;
 
+pub mod functions;
+
 pub trait Module<T> {
     fn forward(&self, x: &Tensor<T>) -> Tensor<T>;
     fn to_gpu(&self) -> Result<Self, TensoriaError>
-    where
-        Self: Sized;
+        where
+            Self: Sized;
     fn parameters(&self) -> Vec<Arc<RwLock<Tensor<T>>>>;
     fn zero_grad(&mut self);
 }
@@ -26,9 +28,9 @@ pub struct Linear<T> {
 }
 
 impl<T> Linear<T>
-where
-    T: TensoriaOps + Clone + Pod + Default + Debug,
-    Vec<T>: GetType,
+    where
+        T: TensoriaOps + Clone + Pod + Default + Debug,
+        Vec<T>: GetType,
 {
     pub fn new(in_size: usize, out_size: usize) -> Result<Self, TensoriaError> {
         let mut rng = rand::thread_rng();
@@ -52,9 +54,9 @@ where
 }
 
 impl<T> Module<T> for Linear<T>
-where
-    T: TensoriaOps + Clone + Pod + Default + Debug,
-    Vec<T>: GetType,
+    where
+        T: TensoriaOps + Clone + Pod + Default + Debug,
+        Vec<T>: GetType,
 {
     fn forward(&self, x: &Tensor<T>) -> Tensor<T> {
         let w = self.w.read().unwrap();
@@ -85,10 +87,10 @@ pub struct Sequential<M, T> {
 }
 
 impl<M, T> Sequential<M, T>
-where
-    T: TensoriaOps + Clone + Pod + Default + Debug,
-    M: Module<T>,
-    Vec<T>: GetType,
+    where
+        T: TensoriaOps + Clone + Pod + Default + Debug,
+        M: Module<T>,
+        Vec<T>: GetType,
 {
     pub fn new(modules: Vec<M>) -> Self {
         let mut self_modules = vec![];
@@ -103,10 +105,10 @@ where
 }
 
 impl<M, T> Module<T> for Sequential<M, T>
-where
-    M: Module<T>,
-    T: TensoriaOps + Clone + Pod + Default + Debug,
-    Vec<T>: GetType,
+    where
+        M: Module<T>,
+        T: TensoriaOps + Clone + Pod + Default + Debug,
+        Vec<T>: GetType,
 {
     fn forward(&self, x: &Tensor<T>) -> Tensor<T> {
         let mut res = self.modules[0].forward(x);
@@ -117,8 +119,8 @@ where
     }
 
     fn to_gpu(&self) -> Result<Self, TensoriaError>
-    where
-        Self: Sized,
+        where
+            Self: Sized,
     {
         todo!()
     }

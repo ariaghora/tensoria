@@ -5,14 +5,39 @@ use num_traits::{FromPrimitive, Num, NumCast, NumOps, Zero};
 
 use crate::gpu::gpu_array::GetType;
 
+// EType: TensoriaOps + Clone + Pod + Default + Debug,
 pub trait TensoriaOps:
-    Sized + Clone + Num + NumCast + NumOps + PartialOrd + Default + Zero + FromPrimitive
+    Sized
+    + Clone
+    + Num
+    + NumCast
+    + NumOps
+    + PartialOrd
+    + Default
+    + Zero
+    + FromPrimitive
+    + Clone
+    + Pod
+    + Default
+    + Debug
 {
 }
 
 impl<T> TensoriaOps for T
 where
-    T: Sized + Clone + Num + NumCast + NumOps + PartialOrd + Default + Zero + FromPrimitive,
+    T: Sized
+        + Clone
+        + Num
+        + NumCast
+        + NumOps
+        + PartialOrd
+        + Default
+        + Zero
+        + FromPrimitive
+        + Clone
+        + Pod
+        + Default
+        + Debug,
     Vec<T>: GetType,
 {
 }
