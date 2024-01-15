@@ -299,14 +299,20 @@ impl<EType> Tensor<EType>
                 ArrayData::GPUArray(ax) => { ax.to_vec()[0] }
             };
 
-            let numel = if axis > EType::from(-1).unwrap() {
+            let axis_is_specified = axis > EType::from(-1).unwrap();
+            let numel = if axis_is_specified {
                 shape[axis.to_usize().unwrap()]
             } else {
                 g.shape().iter().fold(1, |x, y| x * y)
             };
-            let og_mean: ArrayData<EType> = og.div_scalar_f32(numel as f32);
-            let og_mean_broadcast = gradient_broadcasting(g, &og_mean);
-            g.add(&og_mean_broadcast)
+
+            let og_mean = og.div_scalar_f32(numel as f32);
+            if axis_is_specified {
+                let og_mean_broadcast = gradient_broadcasting(g, &og_mean);
+                return g.add(&og_mean_broadcast);
+            } else {
+                return g.add(&og_mean);
+            }
         });
         let res = self.tensor_unop(mean_fn, gf);
 
@@ -326,9 +332,18 @@ impl<EType> Tensor<EType>
         });
 
         let gf: Option<GradFn<EType>> = Some(|g, og, parent| {
-            // The gradient of sum is broadcasting the gradient back to the shape of 'g'.
-            let og_broadcast = gradient_broadcasting(g, &og);
-            g.add(&og_broadcast)
+            let axis = match &parent.read().unwrap().deps[1].read().unwrap().data {
+                ArrayData::CPUArray(ax) => { ax.first().unwrap().to_owned() }
+                ArrayData::GPUArray(ax) => { ax.to_vec()[0] }
+            };
+            let axis_is_specified = axis > EType::from(-1).unwrap();
+            if axis_is_specified {
+                // The gradient of sum is broadcasting the gradient back to the shape of 'g'.
+                let og_broadcast = gradient_broadcasting(g, &og);
+                return g.add(&og_broadcast);
+            } else {
+                return g.add(&og);
+            }
         });
         let res = self.tensor_unop(sum_fn, gf);
 
@@ -589,6 +604,13 @@ mod test {
         res.backward()?;
         assert_eq!(res.to_vec(), vec![3.]);
         assert_eq!(x.grad_vec(), Some(vec![1. / 3., 1. / 3., 1. / 3.]));
+
+        let mut x = Tensor::new([2, 3], vec![1.; 6])?;
+        x.set_requires_grad(true);
+        let res = x.mean(None, false);
+        res.backward()?;
+        assert_eq!(res.to_vec(), vec![1.]);
+        assert_eq!(x.grad_vec(), Some(vec![1. / 6.; 6]));
 
         let mut x = Tensor::new([2, 3], vec![2., 2., 2., 2., 2., 2.])?;
         x.set_requires_grad(true);
