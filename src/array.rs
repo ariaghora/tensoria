@@ -48,7 +48,7 @@ where
         shape: S,
         data: Vec<EType>,
     ) -> Result<ArrayData<EType>, TensoriaError> {
-        let len = shape.as_ref().iter().fold(1, |x, y| x * y);
+        let len = shape.as_ref().iter().product::<usize>();
         if len != data.len() {
             return Err(TensoriaError::CannotReshapeError {});
         }
@@ -159,6 +159,15 @@ where
                 })
                 .into_dyn(),
             ),
+            ArrayData::GPUArray(_) => todo!(),
+        }
+    }
+    pub fn powi(&self, exp: i32) -> ArrayData<EType> {
+        match self {
+            ArrayData::CPUArray(data) => ArrayData::CPUArray(data.mapv(|v| {
+                let vf = v.to_f32().unwrap().powi(exp);
+                EType::from(vf).unwrap()
+            })),
             ArrayData::GPUArray(_) => todo!(),
         }
     }

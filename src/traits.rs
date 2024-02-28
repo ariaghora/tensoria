@@ -5,7 +5,6 @@ use num_traits::{FromPrimitive, Num, NumCast, NumOps, Zero};
 
 use crate::gpu::gpu_array::GetType;
 
-// EType: TensoriaOps + Clone + Pod + Default + Debug,
 pub trait TensoriaOps:
     Sized
     + Clone

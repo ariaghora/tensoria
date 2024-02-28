@@ -275,8 +275,21 @@ where
     }
 
     pub fn tensor_div(&self, other: &Tensor<EType>) -> Self {
-        let lgf: Option<GradFn<EType>> = Some(|_lg, _og, _parent| todo!());
-        let rgf: Option<GradFn<EType>> = Some(|_rg, _og, _parent| todo!());
+        let lgf: Option<GradFn<EType>> = Some(|lg, og, parent| {
+            let parent = &parent.read().unwrap();
+            let rhs = &parent.deps[1].read().unwrap().data;
+            let local_grad = &og.div(rhs);
+            lg.add(gradient_broadcasting(&lg, local_grad))
+        });
+        let rgf: Option<GradFn<EType>> = Some(|rg, og, parent| {
+            let parent = &parent.read().unwrap();
+            let lhs = &parent.deps[0].read().unwrap().data;
+            let rhs = &parent.deps[1].read().unwrap().data;
+            let local_grad = &lhs
+                .mul(og.scale(EType::from(-1).unwrap()))
+                .div(&rhs.powi(2));
+            rg.add(gradient_broadcasting(&rg, local_grad))
+        });
         let div_fn: BinOpFn<EType> = Box::new(|a, b| a.div(b));
         self.tensor_binop(other, div_fn, lgf, rgf)
     }
@@ -576,13 +589,15 @@ mod test {
 
     #[test]
     fn div() -> Result<(), TensoriaError> {
-        let x = Tensor::new([2, 2], vec![1., 2., 3., 4.])?;
+        let mut x = Tensor::new([2, 2], vec![1., 2., 3., 4.])?;
         let mut y = Tensor::new([2], vec![1., 2.])?;
+        x.set_requires_grad(true);
         y.set_requires_grad(true);
         let res = &x / &y;
         assert_eq!(res.to_vec(), vec![1., 1., 3., 2.]);
         res.backward()?;
-        assert_eq!(y.grad_vec(), Some(vec![2., 2.]));
+        assert_eq!(x.grad_vec(), Some(vec![1., 0.5, 1., 0.5]));
+        assert_eq!(y.grad_vec(), Some(vec![-4., -1.5]));
         Ok(())
     }
 
@@ -739,6 +754,25 @@ mod test {
         res.backward()?;
         assert_eq!(res.shape(), vec![1]);
         assert_eq!(x.grad_vec(), Some(vec![1.; 3]));
+        Ok(())
+    }
+
+    #[test]
+    fn exp() -> Result<(), TensoriaError> {
+        let mut x = Tensor::new([3, 2], vec![2., 2., 4., 4., 6., 6.])?;
+        x.set_requires_grad(true);
+
+        let res = x.exp();
+        assert_eq!(
+            res.to_vec(),
+            x.to_vec().iter().map(|v| v.exp()).collect::<Vec<f32>>()
+        );
+        res.backward()?;
+
+        assert_eq!(
+            x.grad_vec().unwrap(),
+            x.to_vec().iter().map(|v| v.exp()).collect::<Vec<f32>>()
+        );
         Ok(())
     }
 }
