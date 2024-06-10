@@ -127,6 +127,7 @@ where
             self.set_requires_grad(true)
         }
     }
+
     pub fn set_requires_grad(&mut self, val: bool) {
         self.requires_grad = val;
         if val {
@@ -743,6 +744,13 @@ mod test {
         res.backward()?;
         assert_eq!(res.shape(), vec![1]);
         assert_eq!(x.grad_vec(), Some(vec![1.; 3]));
+
+        let mut x = Tensor::new([1, 3], vec![1., 2., 3.])?;
+        x.set_requires_grad(true);
+        let res = x.sum(Some(1), false);
+        res.backward()?;
+        assert_eq!(res.shape(), vec![1]);
+        assert_eq!(x.grad_vec(), Some(vec![1.; 3]));
         Ok(())
     }
 
@@ -751,6 +759,13 @@ mod test {
         let mut x = Tensor::new([1, 3], vec![1., 2., 3.])?.to_gpu()?;
         x.set_requires_grad(true);
         let res = x.sum(None, false);
+        res.backward()?;
+        assert_eq!(res.shape(), vec![1]);
+        assert_eq!(x.grad_vec(), Some(vec![1.; 3]));
+
+        let mut x = Tensor::new([1, 3], vec![1., 2., 3.])?.to_gpu()?;
+        x.set_requires_grad(true);
+        let res = x.sum(Some(1), false);
         res.backward()?;
         assert_eq!(res.shape(), vec![1]);
         assert_eq!(x.grad_vec(), Some(vec![1.; 3]));
